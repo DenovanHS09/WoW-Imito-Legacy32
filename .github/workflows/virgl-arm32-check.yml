@@ -112,6 +112,65 @@ jobs:
                   print("No architecture references in filenames.")
           PY
 
+      - name: Read complete CMake configuration
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          with zipfile.ZipFile(path) as archive:
+              name = "cpp/virglrenderer/CMakeLists.txt"
+              print("=== COMPLETE CMAKE FILE ===")
+              print(archive.read(name).decode("utf-8", "replace"))
+          PY
+
+      - name: Search architecture and dependency requirements
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          terms = (
+              "__aarch64__", "__arm__", "arm_neon",
+              "-march=", "-mfpu=", "-marm", "-mthumb",
+              "ANDROID_ABI", "CMAKE_ANDROID_ARCH_ABI",
+              "aarch64-linux-gnu", "arm-linux-gnueabihf",
+              "libdrm", "gbm", "EGL", "GLES"
+          )
+
+          with zipfile.ZipFile(path) as archive:
+              for name in archive.namelist():
+                  if not name.endswith((
+                      ".c", ".h", ".cpp", ".cmake", ".txt"
+                  )):
+                      continue
+
+                  try:
+                      lines = archive.read(name).decode(
+                          "utf-8", "replace"
+                      ).splitlines()
+
+                      matches = [
+                          (i, line.strip())
+                          for i, line in enumerate(lines, 1)
+                          if any(
+                              term.lower() in line.lower()
+                              for term in terms
+                          )
+                      ]
+
+                      if matches:
+                          print(f"\n=== {name} ===")
+                          for number, line in matches[:20]:
+                              print(f"{number}: {line[:200]}")
+
+                  except Exception:
+                      pass
+          PY
+
       - name: Finish audit
-        run: echo "VirGL compatibility inspection completed."
-        
+        run: |
+          echo "=== VIRGL AUDIT FINISHED ==="
+          
