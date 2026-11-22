@@ -1,0 +1,68 @@
+name: Legacy32 Component Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - legacy32-dev
+    paths:
+      - 'patches/**'
+      - '.github/workflows/component-audit.yml'
+
+jobs:
+  inspect-components:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect ZIP archives
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          keywords = (
+              "arm32", "armhf", "armv7", "armeabi",
+              "arm64", "aarch64", "x86", "wine",
+              "virgl", "vortek", ".so", ".a"
+          )
+
+          for path in sorted(Path("patches").rglob("*.zip")):
+              print(f"\n=== ARCHIVE: {path} ===")
+
+              try:
+                  with zipfile.ZipFile(path) as archive:
+                      names = archive.namelist()
+                      print("Total entries:", len(names))
+                      print("--- Relevant entries ---")
+
+                      matches = [
+                          name for name in names
+                          if any(word in name.lower() for word in keywords)
+                      ]
+
+                      for name in matches[:100]:
+                          print(name)
+
+                      if not matches:
+                          print("No architecture-related filenames found.")
+
+              except Exception as error:
+                  print("ERROR:", error)
+          PY
+
+      - name: Inspect patch headers
+        run: |
+          for file in patches/**/*.patch; do
+            [ -f "$file" ] || continue
+            echo ""
+            echo "=== $file ==="
+            head -n 35 "$file"
+          done
+
+      - name: Audit completed
+        run: |
+          echo "=== COMPONENT AUDIT FINISHED ==="
+          
