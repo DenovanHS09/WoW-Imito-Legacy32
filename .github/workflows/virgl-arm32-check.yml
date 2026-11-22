@@ -3,12 +3,29 @@ name: VirGL ARM32 Compatibility Check
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - legacy32-dev
+    paths:
+      - 'patches/virgl/**'
+      - '.github/workflows/virgl-arm32-check.yml'
+
+permissions:
+  contents: read
 
 jobs:
   inspect:
+    name: Analyze VirGL architecture
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        run: |
+          test -f patches/virgl/virgl-imito-1.5.7-source.zip
+          echo "VirGL 1.5.7 archive found."
 
       - name: Inspect VirGL build configuration
         run: |
@@ -17,28 +34,84 @@ jobs:
 
           path = "patches/virgl/virgl-imito-1.5.7-source.zip"
 
-          with zipfile.ZipFile(path) as z:
-              for name in z.namelist():
-                  low = name.lower()
-                  if any(x in low for x in (
-                      "cmakelists.txt",
-                      "meson.build",
-                      "configure.ac",
-                      "makefile",
-                      "android.mk",
-                      "application.mk"
-                  )):
-                      print("\n===", name, "===")
-                      try:
-                          data = z.read(name).decode("utf-8", "replace")
-                          for line in data.splitlines():
-                              if any(x in line.lower() for x in (
-                                  "arm", "aarch64", "android",
-                                  "host", "target", "cross",
-                                  "architecture", "processor",
-                                  "cmake_system"
-                              )):
-                                  print(line[:250])
-                      except Exception as e:
-                          print("Read error:", e)
+          build_files = (
+              "cmakelists.txt",
+              "meson.build",
+              "configure.ac",
+              "makefile",
+              "android.mk",
+              "application.mk",
+              "configure"
+          )
+
+          keywords = (
+              "arm", "aarch64", "android", "host",
+              "target", "cross", "architecture",
+              "processor", "cmake_system",
+              "egl", "gles", "opengl"
+          )
+
+          with zipfile.ZipFile(path) as archive:
+              found = 0
+
+              for name in archive.namelist():
+                  if not any(x in name.lower() for x in build_files):
+                      continue
+
+                  found += 1
+                  print(f"\n=== BUILD FILE: {name} ===")
+
+                  try:
+                      content = archive.read(name).decode(
+                          "utf-8", "replace"
+                      )
+
+                      for number, line in enumerate(
+                          content.splitlines(), 1
+                      ):
+                          if any(k in line.lower() for k in keywords):
+                              print(f"{number}: {line[:220]}")
+
+                  except Exception as error:
+                      print("READ ERROR:", error)
+
+              print("\n=== SUMMARY ===")
+              print("Build configuration files found:", found)
+
+              if found == 0:
+                  print("No recognized build configuration found.")
           PY
+
+      - name: Inspect archive architecture references
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          terms = (
+              "arm32", "armhf", "armv7",
+              "armeabi-v7a", "aarch64", "arm64",
+              "x86", "android"
+          )
+
+          with zipfile.ZipFile(path) as archive:
+              matches = set()
+
+              for name in archive.namelist():
+                  low = name.lower()
+                  for term in terms:
+                      if term in low:
+                          matches.add(term)
+
+              print("Architecture references in filenames:")
+              for term in sorted(matches):
+                  print("-", term)
+
+              if not matches:
+                  print("No architecture references in filenames.")
+          PY
+
+      - name: Finish audit
+        run: echo "VirGL compatibility inspection completed."
+        
