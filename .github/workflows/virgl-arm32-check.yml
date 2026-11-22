@@ -1,0 +1,44 @@
+name: VirGL ARM32 Compatibility Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inspect VirGL build configuration
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          with zipfile.ZipFile(path) as z:
+              for name in z.namelist():
+                  low = name.lower()
+                  if any(x in low for x in (
+                      "cmakelists.txt",
+                      "meson.build",
+                      "configure.ac",
+                      "makefile",
+                      "android.mk",
+                      "application.mk"
+                  )):
+                      print("\n===", name, "===")
+                      try:
+                          data = z.read(name).decode("utf-8", "replace")
+                          for line in data.splitlines():
+                              if any(x in line.lower() for x in (
+                                  "arm", "aarch64", "android",
+                                  "host", "target", "cross",
+                                  "architecture", "processor",
+                                  "cmake_system"
+                              )):
+                                  print(line[:250])
+                      except Exception as e:
+                          print("Read error:", e)
+          PY
+          
