@@ -1,0 +1,66 @@
+
+name: Legacy32 Repository Audit
+
+on:
+  push:
+    branches:
+      - legacy32-dev
+
+jobs:
+  repository-audit:
+    name: Inspect project structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect project directories
+        run: |
+          echo "=== LEGACY32 REPOSITORY AUDIT ==="
+
+          for dir in app gradle src jni .github/workflows patches docs; do
+            if [ -d "$dir" ]; then
+              echo "[FOUND] $dir/"
+            else
+              echo "[NOT FOUND] $dir/"
+            fi
+          done
+
+      - name: Search Android build files
+        run: |
+          echo "=== ANDROID BUILD FILES ==="
+
+          FILES=$(find . -type f \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "gradlew" \
+            -o -name "AndroidManifest.xml" \
+            -o -name "CMakeLists.txt" \
+            -o -name "Android.mk" \
+            -o -name "Application.mk" \) \
+            -not -path "./.git/*" | sort)
+
+          if [ -n "$FILES" ]; then
+            echo "$FILES"
+          else
+            echo "No Android/native build files found."
+          fi
+
+      - name: Inspect compatibility patches
+        run: |
+          echo "=== COMPATIBILITY COMPONENTS ==="
+
+          if [ -d patches ]; then
+            find patches -maxdepth 2 -type f \
+              \( -name "*.patch" -o -iname "readme*" \
+              -o -name "*.zip" \) | sort
+          fi
+
+      - name: Audit completed
+        run: |
+          echo "=== AUDIT FINISHED ==="
+          echo "No application source was modified."
+          
