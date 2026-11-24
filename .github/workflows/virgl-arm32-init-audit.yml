@@ -1,5 +1,5 @@
 
-name: VirGL ARM32 Initialization Audit
+name: VirGL ARM32 Deep Initialization Audit
 
 on:
   workflow_dispatch:
@@ -8,12 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  init-audit:
+  deep-audit:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Legacy32 repository
+      - name: Checkout Legacy32 development branch
         uses: actions/checkout@v4
+        with:
+          ref: legacy32-dev
 
       - name: Checkout Winlator source
         uses: actions/checkout@v4
@@ -32,65 +34,101 @@ jobs:
           unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
             -d build/virgl-source
 
-      - name: Audit initialization and EGL integration
+      - name: Extract initialization code
         shell: bash
         run: |
-          mkdir -p build/init-audit
+          set -e
 
-          VIRGL="build/virgl-source"
+          OUT="build/deep-audit"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
           WIN="build/winlator-upstream/app/src/main/cpp/winlator"
-          OUT="build/init-audit/report.txt"
+
+          mkdir -p "$OUT"
 
           {
-            echo "=== LEGACY32 VIRGL INITIALIZATION AUDIT ==="
-            echo "Branch: $GITHUB_REF"
-            echo
-
-            echo "=== 1. VIRGL JNI FUNCTIONS ==="
-            grep -R -n -E \
-              'Java_.*VirGLRendererComponent|handleNewConnection|handleRequest|destroyClient|destroyRenderer|getCurrentEGLContextPtr' \
-              "$VIRGL" || true
+            echo "=== 1. VIRGL SERVER JNI: LINES 100-165 ==="
+            sed -n '100,165p' "$VIRGL/server/virgl_server.c"
 
             echo
-            echo "=== 2. EGL CONTEXT REFERENCES ==="
+            echo "=== 2. VIRGL EGL INITIALIZATION: LINES 40-150 ==="
+            sed -n '40,150p' "$VIRGL/server/virgl_server_renderer.c"
+
+            echo
+            echo "=== 3. VIRGL EGL VALIDATION: LINES 600-700 ==="
+            sed -n '600,700p' "$VIRGL/server/virgl_server_renderer.c"
+
+            echo
+            echo "=== 4. JAVA COMPONENT: LINES 1-110 ==="
+            sed -n '1,110p' \
+              "build/virgl-source/java/com/winlator/xenvironment/components/VirGLRendererComponent.java"
+
+            echo
+            echo "=== 5. WINLATOR GPU HELPER: LINES 1-180 ==="
+            sed -n '1,180p' "$WIN/src/gpu_helper.c"
+
+            echo
+            echo "=== 6. GLOBAL EGL CONTEXT DECLARATIONS ==="
             grep -R -n -E \
-              'globalEGLContext|eglCreateContext|eglMakeCurrent|eglGetCurrentContext|eglDestroyContext' \
+              'globalEGLContext|visibility.*default|visibility.*hidden' \
               "$VIRGL" "$WIN" || true
 
             echo
-            echo "=== 3. VIRGL CONNECTION AND REQUEST FLOW ==="
+            echo "=== 7. JNI LIBRARY LOADING ==="
             grep -R -n -E \
-              'handleNewConnection|handleRequest|virgl_renderer_init|virgl_renderer_reset|virgl_renderer_cleanup|virgl_renderer_context_create' \
-              "$VIRGL" || true
-
-            echo
-            echo "=== 4. VIRGL SERVER SOURCE FILES ==="
-            find "$VIRGL" -type f \
-              \( -iname '*server*' -o -iname '*renderer*' \) \
-              | sort
-
-            echo
-            echo "=== 5. WINLATOR EGL SOURCE FILES ==="
-            grep -R -l -E \
-              'eglCreateContext|eglMakeCurrent|eglGetCurrentContext' \
-              "$WIN" || true
-
-            echo
-            echo "=== 6. JNI LIBRARY LOAD REFERENCES ==="
-            grep -R -n -E \
-              'loadLibrary.*(winlator|virglrenderer)|System.loadLibrary' \
+              'System\.loadLibrary|loadLibrary' \
+              build/virgl-source/java \
               build/winlator-upstream/app/src/main 2>/dev/null || true
 
             echo
-            echo "=== AUDIT FINISHED ==="
+            echo "=== 8. VIRGL BUILD CONFIGURATION ==="
+            grep -n -E \
+              'add_library|target_link_libraries|visibility|virglrenderer' \
+              "$VIRGL/CMakeLists.txt" || true
+
+            echo
+            echo "=== AUDIT COMPLETE ==="
+          } > "$OUT/initialization-code.txt"
+
+          cat "$OUT/initialization-code.txt"
+
+      - name: Audit EGL symbol visibility in source
+        shell: bash
+        run: |
+          set -e
+
+          OUT="build/deep-audit/symbol-source-audit.txt"
+          WIN="build/winlator-upstream/app/src/main/cpp/winlator"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          {
+            echo "=== GLOBAL EGL SYMBOL SOURCE AUDIT ==="
+
+            echo
+            echo "--- Definition ---"
+            grep -R -n 'EGLContext globalEGLContext' "$WIN" || true
+
+            echo
+            echo "--- External declaration ---"
+            grep -R -n 'extern EGLContext globalEGLContext' "$VIRGL" || true
+
+            echo
+            echo "--- Export/visibility macros ---"
+            grep -R -n -E \
+              'visibility|__declspec|EXPORT.*SYMBOL|HIDDEN' \
+              "$WIN" "$VIRGL" || true
+
+            echo
+            echo "NOTE: Source declarations alone do not prove"
+            echo "that globalEGLContext is exported in the final ELF."
+            echo "A dynamic-symbol inspection is still required."
           } > "$OUT"
 
           cat "$OUT"
 
-      - name: Upload initialization audit
+      - name: Upload deep audit
         uses: actions/upload-artifact@v4
         with:
-          name: virgl-arm32-init-audit
-          path: build/init-audit/
+          name: virgl-arm32-init-deep-audit
+          path: build/deep-audit/
           if-no-files-found: error
           
