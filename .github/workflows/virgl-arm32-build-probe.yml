@@ -23,43 +23,44 @@ jobs:
         run: |
           set -e
           test -f patches/virgl/virgl-imito-1.5.7-source.zip
-
           mkdir -p build/virgl-source
-
-          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
-            -d build/virgl-source
-
+          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip -d build/virgl-source
           test -f build/virgl-source/cpp/virglrenderer/CMakeLists.txt
-
           echo "VirGL source archive found."
-          echo "Source directory:"
-
-          find build/virgl-source -maxdepth 3 -type f | head -40
 
       - name: Install Android build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build unzip
 
-      - name: Install Android SDK command-line tools
+      - name: Locate Android SDK tools
         run: |
           set -e
 
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "=== SDK ROOT ==="
+          echo "$ANDROID_SDK_ROOT"
 
-          test -n "$ANDROID_SDK_ROOT"
+          echo "=== SEARCHING SDKMANAGER ==="
 
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null | head -1 || true)"
 
-          test -f "$SDKMANAGER"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found."
+            echo "=== SDK DIRECTORY ==="
+            find "$ANDROID_SDK_ROOT" -maxdepth 5 -type f | head -100
+            exit 1
+          fi
 
-          echo "Android SDK command-line tools verified."
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+          echo "Found: $SDKMANAGER"
+          "$SDKMANAGER" --version
 
       - name: Install Android NDK
         run: |
           set -e
-
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
 
           echo "=== INSTALLED SDK PACKAGES ==="
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --list_installed
@@ -77,16 +78,13 @@ jobs:
       - name: Inspect ARM32 dependencies
         run: |
           echo "=== VIRGL CMAKE CONFIGURATION ==="
-
           sed -n '1,180p' build/virgl-source/cpp/virglrenderer/CMakeLists.txt
 
           echo "=== JNI AND GRAPHICS DEPENDENCIES ==="
-
           grep -RniE 'winlator\.h|winlator|jni\.h|EGL|GLES' \
             build/virgl-source/cpp | head -100 || true
 
           echo "=== ARCHITECTURE REFERENCES ==="
-
           grep -RniE '__arm__|__aarch64__|armv7|aarch64' \
             build/virgl-source/cpp | head -80 || true
 
@@ -112,7 +110,6 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-
           cmake --build build/virgl-arm32 --parallel 2 \
             2>&1 | tee build/compile.log
 
@@ -124,16 +121,7 @@ jobs:
           echo "Target OS: Android"
           echo "NDK: 27.2.12479018"
 
-          echo "=== NDK STATUS ==="
-
-          if [ -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" ]; then
-            echo "NDK installed and verified."
-          else
-            echo "NDK installation not verified."
-          fi
-
           echo "=== CONFIGURATION ==="
-
           if [ -f build/configure.log ]; then
             tail -60 build/configure.log
           else
@@ -141,7 +129,6 @@ jobs:
           fi
 
           echo "=== COMPILATION ==="
-
           if [ -f build/compile.log ]; then
             tail -80 build/compile.log
           else
@@ -149,7 +136,6 @@ jobs:
           fi
 
           echo "=== GENERATED LIBRARIES ==="
-
           find build/virgl-arm32 -type f \
             \( -name '*.so' -o -name '*.a' \) 2>/dev/null || true
 
