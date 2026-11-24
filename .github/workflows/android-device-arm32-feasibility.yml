@@ -4,6 +4,12 @@ name: Android ARM32 Feasibility Check
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - legacy32-dev
+    paths:
+      - '.github/workflows/android-device-arm32-feasibility.yml'
+
 jobs:
   inspect:
     runs-on: ubuntu-latest
