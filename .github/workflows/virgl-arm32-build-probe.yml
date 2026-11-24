@@ -63,7 +63,11 @@ jobs:
               path = pathlib.Path(path)
               content = path.read_text()
 
-              pattern = rf'^\s*#\s*include\s*[<"]{re.escape(header)}[>"]'
+              pattern = (
+                  r'^\s*#\s*include\s*[<"]'
+                  + re.escape(header)
+                  + r'[>"]'
+              )
 
               if re.search(pattern, content, re.M):
                   print(f"{header} already included in {path.name}")
@@ -71,43 +75,55 @@ jobs:
 
               lines = content.splitlines(keepends=True)
 
-              # Insert after the last existing include directive.
               positions = [
                   i for i, line in enumerate(lines)
                   if re.match(r'^\s*#\s*include\b', line)
               ]
 
-              if positions:
-                  index = positions[-1] + 1
-              else:
-                  index = 0
-
+              index = positions[-1] + 1 if positions else 0
               lines.insert(index, f"#include <{header}>\n")
-              path.write_text("".join(lines))
 
+              path.write_text("".join(lines))
               print(f"Added <{header}> to {path.name}")
 
           time_header = pathlib.Path(sys.argv[1])
           string_header = pathlib.Path(sys.argv[2])
 
-          add_include(time_header, "time")
-          add_include(string_header, "string")
-          add_include(string_header, "stdlib")
+          add_include(time_header, "time.h")
+          add_include(string_header, "string.h")
+          add_include(string_header, "stdlib.h")
 
-          for path, headers in [
-              (time_header, ["time"]),
-              (string_header, ["string", "stdlib"])
-          ]:
+          checks = [
+              (time_header, ["time.h"]),
+              (string_header, ["string.h", "stdlib.h"])
+          ]
+
+          for path, headers in checks:
               content = path.read_text()
 
               for header in headers:
-                  pattern = rf'^\s*#\s*include\s*[<"]{re.escape(header)}[>"]'
+                  pattern = (
+                      r'^\s*#\s*include\s*[<"]'
+                      + re.escape(header)
+                      + r'[>"]'
+                  )
+
                   assert re.search(pattern, content, re.M), (
-                      f"Missing {header}.h in {path}"
+                      f"Missing <{header}> in {path}"
                   )
 
               print(f"Verified: {path.name}")
 
+          # Reject the previously introduced malformed headers.
+          for path in [time_header, string_header]:
+              content = path.read_text()
+              assert not re.search(
+                  r'^\s*#\s*include\s*[<"](?:time|string|stdlib)[>"]',
+                  content,
+                  re.M
+              ), f"Malformed header include found in {path}"
+
+          print("All header checks passed.")
           PY
 
           echo "=== TIME_UTILS.H ==="
