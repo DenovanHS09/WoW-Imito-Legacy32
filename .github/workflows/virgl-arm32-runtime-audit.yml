@@ -2,12 +2,14 @@
 name: VirGL ARM32 Runtime Audit
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - Legacy32dev
     paths:
       - '.github/workflows/virgl-arm32-runtime-audit.yml'
+      - 'patches/virgl/**'
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -151,10 +153,6 @@ jobs:
 
             NAME="$(basename "$LIB")"
 
-            echo "========================================"
-            echo "LIBRARY: $NAME"
-            echo "========================================"
-
             file "$LIB"
 
             "$READELF" -h "$LIB" \
@@ -166,25 +164,18 @@ jobs:
             "$READELF" --dyn-syms --wide "$LIB" \
               > "build/runtime-audit/$NAME.symbols.txt"
 
-            echo "--- ELF HEADER ---"
-
+            echo "=== $NAME ELF HEADER ==="
             grep -E 'Class:|Machine:|OS/ABI:|ABI Version:' \
               "build/runtime-audit/$NAME.elf-header.txt"
 
-            echo "--- DT_NEEDED ---"
+            echo "=== $NAME DT_NEEDED ==="
+            grep 'NEEDED' "build/runtime-audit/$NAME.dynamic.txt" || true
 
-            grep 'NEEDED' \
-              "build/runtime-audit/$NAME.dynamic.txt" || true
+            echo "=== $NAME UNDEFINED SYMBOLS ==="
+            grep ' UND ' "build/runtime-audit/$NAME.symbols.txt" || true
 
-            echo "--- UNDEFINED SYMBOLS ---"
-
-            grep ' UND ' \
-              "build/runtime-audit/$NAME.symbols.txt" || true
-
-            echo "--- EXPORTED JNI SYMBOLS ---"
-
-            grep 'Java_' \
-              "build/runtime-audit/$NAME.symbols.txt" || true
+            echo "=== $NAME JNI EXPORTS ==="
+            grep 'Java_' "build/runtime-audit/$NAME.symbols.txt" || true
           done
 
       - name: Audit EGL and GLES references
@@ -197,15 +188,11 @@ jobs:
             build/virgl-arm32-integrated/winlator/libwinlator.so \
             build/virgl-arm32-integrated/virglrenderer/libvirglrenderer.so
           do
-            echo "========================================"
-            echo "GRAPHICS REFERENCES: $(basename "$LIB")"
-            echo "========================================"
+            echo "=== GRAPHICS REFERENCES: $(basename "$LIB") ==="
 
             "$READELF" --dyn-syms --wide "$LIB" \
               | grep -E 'egl[A-Z]|gl[A-Z]' || true
           done
-
-          echo "=== SOURCE GRAPHICS API REFERENCES ==="
 
           grep -RhoE '\b(gl|egl)[A-Z][A-Za-z0-9_]+' \
             build/virgl-source/cpp/virglrenderer \
@@ -220,19 +207,19 @@ jobs:
 
           mkdir -p build/runtime-audit
 
-          echo "=== JNI FUNCTIONS IN WINLATOR ==="
-
-          grep -RInE \
-            'JNIEXPORT|Java_com_winlator' \
+          grep -RInE 'JNIEXPORT|Java_com_winlator' \
             build/winlator-upstream/app/src/main/cpp/winlator \
-            | tee build/runtime-audit/winlator-jni-source.txt || true
+            > build/runtime-audit/winlator-jni-source.txt || true
 
-          echo "=== JNI FUNCTIONS IN VIRGL ==="
-
-          grep -RInE \
-            'JNIEXPORT|Java_com_winlator' \
+          grep -RInE 'JNIEXPORT|Java_com_winlator' \
             build/virgl-source/cpp/virglrenderer \
-            | tee build/runtime-audit/virgl-jni-source.txt || true
+            > build/runtime-audit/virgl-jni-source.txt || true
+
+          echo "=== WINLATOR JNI ==="
+          cat build/runtime-audit/winlator-jni-source.txt
+
+          echo "=== VIRGL JNI ==="
+          cat build/runtime-audit/virgl-jni-source.txt
 
       - name: Audit EGL context ownership and JNI implementation
         run: |
@@ -245,29 +232,31 @@ jobs:
 
           mkdir -p build/runtime-audit
 
-          echo "=== globalEGLContext SOURCE REFERENCES ==="
-
           grep -RIn "globalEGLContext" "$WINLATOR" "$VIRGL" \
-            | tee build/runtime-audit/global-egl-context-source.txt || true
-
-          echo "=== getCurrentEGLContextPtr SOURCE REFERENCES ==="
+            > build/runtime-audit/global-egl-context-source.txt || true
 
           grep -RIn "getCurrentEGLContextPtr" "$WINLATOR" "$VIRGL" \
-            | tee build/runtime-audit/current-egl-context-source.txt || true
-
-          echo "=== libwinlator.so DYNAMIC SYMBOL ==="
+            > build/runtime-audit/current-egl-context-source.txt || true
 
           "$READELF" --dyn-syms --wide \
             build/virgl-arm32-integrated/winlator/libwinlator.so \
             | grep -w "globalEGLContext" \
-            | tee build/runtime-audit/global-egl-context-winlator-symbol.txt || true
-
-          echo "=== libvirglrenderer.so DYNAMIC SYMBOL ==="
+            > build/runtime-audit/global-egl-context-winlator-symbol.txt || true
 
           "$READELF" --dyn-syms --wide \
             build/virgl-arm32-integrated/virglrenderer/libvirglrenderer.so \
             | grep -E "globalEGLContext|getCurrentEGLContextPtr" \
-            | tee build/runtime-audit/global-egl-context-virgl-symbol.txt || true
+            > build/runtime-audit/global-egl-context-virgl-symbol.txt || true
+
+          echo "=== SOURCE REFERENCES ==="
+          cat build/runtime-audit/global-egl-context-source.txt
+          cat build/runtime-audit/current-egl-context-source.txt
+
+          echo "=== WINLATOR DYNAMIC SYMBOL ==="
+          cat build/runtime-audit/global-egl-context-winlator-symbol.txt
+
+          echo "=== VIRGL DYNAMIC SYMBOL ==="
+          cat build/runtime-audit/global-egl-context-virgl-symbol.txt
 
       - name: Generate runtime audit summary
         if: always()
@@ -281,12 +270,10 @@ jobs:
             echo "NDK: 27.2.12479018"
 
             echo "=== LIBRARIES ==="
-
             find build/virgl-arm32-integrated -type f \
               -name '*.so' 2>/dev/null || true
 
             echo "=== AUDIT FILES ==="
-
             find build/runtime-audit -type f 2>/dev/null || true
           } | tee build/runtime-audit/summary.txt
 
