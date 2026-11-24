@@ -1,0 +1,161 @@
+
+name: VirGL PowerVR GLES Compatibility Audit
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - legacy32-dev
+    paths:
+      - '.github/workflows/virgl-powervr-gles-audit.yml'
+      - 'patches/virgl/virgl-imito-1.5.7-source.zip'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Audit VirGL 1.5.7 source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          import re
+          from pathlib import Path
+          from collections import Counter
+
+          archive = Path(
+              "patches/virgl/virgl-imito-1.5.7-source.zip"
+          )
+
+          print("=== VIRGL POWERVR GLES AUDIT ===")
+
+          if not archive.exists():
+              print("[ERROR] VirGL 1.5.7 archive not found")
+              raise SystemExit(1)
+
+          with zipfile.ZipFile(archive) as z:
+              files = [
+                  n for n in z.namelist()
+                  if not n.endswith("/")
+              ]
+
+              sources = {}
+
+              for name in files:
+                  if name.lower().endswith((
+                      ".c", ".cc", ".cpp", ".h", ".hpp",
+                      ".cmake", ".txt"
+                  )):
+                      try:
+                          sources[name] = z.read(name).decode(
+                              "utf-8", errors="replace"
+                          )
+                      except Exception:
+                          pass
+
+          print(f"Archive entries: {len(files)}")
+          print(f"Source files inspected: {len(sources)}")
+
+          patterns = {
+              "GLES INCLUDES": (
+                  r"#include\s*[<\"](?:GLES|GLES2|GLES3)/[^>\"]+"
+              ),
+              "EGL CONTEXT REQUIREMENTS": (
+                  r"EGL_CONTEXT_CLIENT_VERSION|"
+                  r"EGL_OPENGL_ES[0-9A-Z_]*"
+              ),
+              "GLES 3.1 / 3.2 REFERENCES": (
+                  r"glDispatchCompute|glMemoryBarrier|"
+                  r"glBindImageTexture|glDebugMessage|"
+                  r"GL_ES_VERSION_3_[12]|"
+                  r"glTexStorage3D"
+              ),
+              "ARM ARCHITECTURE REFERENCES": (
+                  r"__arm__|__aarch64__|"
+                  r"ANDROID_ABI|armeabi-v7a|arm64-v8a"
+              ),
+              "ARCHITECTURE COMPILER FLAGS": (
+                  r"-march=|-mfpu=|-mfloat-abi=|-marm\b|-mthumb\b"
+              ),
+              "GRAPHICS EXTENSIONS": (
+                  r"GL_[A-Z0-9_]+"
+              ),
+              "BUILD DEPENDENCIES": (
+                  r"find_package|target_link_libraries|"
+                  r"add_library|add_subdirectory"
+              ),
+              "WINLATOR DEPENDENCIES": (
+                  r"winlator|JNI|JavaVM|pthread"
+              )
+          }
+
+          print("")
+          print("=== SOURCE ANALYSIS ===")
+
+          for category, pattern in patterns.items():
+              print("")
+              print(f"--- {category} ---")
+
+              regex = re.compile(pattern)
+              count = 0
+
+              for filename, content in sources.items():
+                  for number, line in enumerate(
+                      content.splitlines(), 1
+                  ):
+                      if regex.search(line):
+                          print(
+                              f"{filename}:{number}: "
+                              f"{line.strip()[:220]}"
+                          )
+                          count += 1
+
+                          if count >= 60:
+                              print("[OUTPUT LIMITED TO 60 MATCHES]")
+                              break
+
+                  if count >= 60:
+                      break
+
+              if count == 0:
+                  print("[NO MATCHES]")
+
+          print("")
+          print("=== FILES OF INTEREST ===")
+
+          for filename in sorted(sources):
+              if any(term in filename.lower() for term in (
+                  "cmakelists",
+                  "config.h",
+                  "virglrenderercomponent",
+                  "egl",
+                  "gles",
+                  "android"
+              )):
+                  print(filename)
+
+          print("")
+          print("=== PRECOMPILED LIBRARIES ===")
+
+          binaries = [
+              n for n in files
+              if n.lower().endswith((
+                  ".so", ".a", ".o", ".dll"
+              ))
+          ]
+
+          if binaries:
+              for name in binaries:
+                  print(name)
+          else:
+              print("[NONE FOUND]")
+
+          print("")
+          print("=== AUDIT COMPLETE ===")
+          PY
+          
