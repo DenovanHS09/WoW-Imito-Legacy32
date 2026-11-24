@@ -5,9 +5,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - legacy32-dev
+      - Legacy32dev
     paths:
       - '.github/workflows/virgl-arm32-runtime-audit.yml'
+
+permissions:
+  contents: read
 
 jobs:
   runtime-audit:
@@ -33,8 +36,11 @@ jobs:
         run: |
           set -e
           mkdir -p build/virgl-source
+
           unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
             -d build/virgl-source
+
+          test -d build/virgl-source/cpp/virglrenderer
 
       - name: Install audit tools
         run: |
@@ -44,6 +50,7 @@ jobs:
       - name: Locate Android NDK
         run: |
           set -e
+
           SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
             -type f -name sdkmanager 2>/dev/null | head -1)"
 
@@ -60,6 +67,7 @@ jobs:
           set -e
 
           WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+
           TIME_HEADER="$WINLATOR/include/time_utils.h"
           STRING_HEADER="$WINLATOR/include/string_utils.h"
 
@@ -71,6 +79,7 @@ jobs:
           def add_include(path, header):
               path = pathlib.Path(path)
               content = path.read_text()
+
               pattern = (
                   r'^\s*#\s*include\s*[<"]'
                   + re.escape(header)
@@ -81,12 +90,14 @@ jobs:
                   return
 
               lines = content.splitlines(keepends=True)
+
               positions = [
                   i for i, line in enumerate(lines)
                   if re.match(r'^\s*#\s*include\b', line)
               ]
 
               index = positions[-1] + 1 if positions else 0
+
               lines.insert(index, f"#include <{header}>\n")
               path.write_text("".join(lines))
 
@@ -136,6 +147,8 @@ jobs:
             build/virgl-arm32-integrated/winlator/libwinlator.so \
             build/virgl-arm32-integrated/virglrenderer/libvirglrenderer.so
           do
+            test -f "$LIB"
+
             NAME="$(basename "$LIB")"
 
             echo "========================================"
@@ -150,21 +163,28 @@ jobs:
             "$READELF" -d "$LIB" \
               > "build/runtime-audit/$NAME.dynamic.txt"
 
-            "$READELF" --dyn-syms "$LIB" \
+            "$READELF" --dyn-syms --wide "$LIB" \
               > "build/runtime-audit/$NAME.symbols.txt"
 
             echo "--- ELF HEADER ---"
+
             grep -E 'Class:|Machine:|OS/ABI:|ABI Version:' \
               "build/runtime-audit/$NAME.elf-header.txt"
 
             echo "--- DT_NEEDED ---"
-            grep 'NEEDED' "build/runtime-audit/$NAME.dynamic.txt" || true
+
+            grep 'NEEDED' \
+              "build/runtime-audit/$NAME.dynamic.txt" || true
 
             echo "--- UNDEFINED SYMBOLS ---"
-            grep ' UND ' "build/runtime-audit/$NAME.symbols.txt" || true
+
+            grep ' UND ' \
+              "build/runtime-audit/$NAME.symbols.txt" || true
 
             echo "--- EXPORTED JNI SYMBOLS ---"
-            grep 'Java_' "build/runtime-audit/$NAME.symbols.txt" || true
+
+            grep 'Java_' \
+              "build/runtime-audit/$NAME.symbols.txt" || true
           done
 
       - name: Audit EGL and GLES references
@@ -181,7 +201,7 @@ jobs:
             echo "GRAPHICS REFERENCES: $(basename "$LIB")"
             echo "========================================"
 
-            "$READELF" --dyn-syms "$LIB" \
+            "$READELF" --dyn-syms --wide "$LIB" \
               | grep -E 'egl[A-Z]|gl[A-Z]' || true
           done
 
@@ -198,34 +218,77 @@ jobs:
         run: |
           set -e
 
+          mkdir -p build/runtime-audit
+
           echo "=== JNI FUNCTIONS IN WINLATOR ==="
 
           grep -RInE \
             'JNIEXPORT|Java_com_winlator' \
             build/winlator-upstream/app/src/main/cpp/winlator \
-            || true
+            | tee build/runtime-audit/winlator-jni-source.txt || true
 
           echo "=== JNI FUNCTIONS IN VIRGL ==="
 
           grep -RInE \
             'JNIEXPORT|Java_com_winlator' \
             build/virgl-source/cpp/virglrenderer \
-            || true
+            | tee build/runtime-audit/virgl-jni-source.txt || true
+
+      - name: Audit EGL context ownership and JNI implementation
+        run: |
+          set -e
+
+          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          mkdir -p build/runtime-audit
+
+          echo "=== globalEGLContext SOURCE REFERENCES ==="
+
+          grep -RIn "globalEGLContext" "$WINLATOR" "$VIRGL" \
+            | tee build/runtime-audit/global-egl-context-source.txt || true
+
+          echo "=== getCurrentEGLContextPtr SOURCE REFERENCES ==="
+
+          grep -RIn "getCurrentEGLContextPtr" "$WINLATOR" "$VIRGL" \
+            | tee build/runtime-audit/current-egl-context-source.txt || true
+
+          echo "=== libwinlator.so DYNAMIC SYMBOL ==="
+
+          "$READELF" --dyn-syms --wide \
+            build/virgl-arm32-integrated/winlator/libwinlator.so \
+            | grep -w "globalEGLContext" \
+            | tee build/runtime-audit/global-egl-context-winlator-symbol.txt || true
+
+          echo "=== libvirglrenderer.so DYNAMIC SYMBOL ==="
+
+          "$READELF" --dyn-syms --wide \
+            build/virgl-arm32-integrated/virglrenderer/libvirglrenderer.so \
+            | grep -E "globalEGLContext|getCurrentEGLContextPtr" \
+            | tee build/runtime-audit/global-egl-context-virgl-symbol.txt || true
 
       - name: Generate runtime audit summary
         if: always()
         run: |
-          echo "=== VIRGL ARM32 RUNTIME AUDIT ==="
-          echo "Target ABI: armeabi-v7a"
-          echo "Android API: 26"
-          echo "NDK: 27.2.12479018"
+          mkdir -p build/runtime-audit
 
-          echo "=== LIBRARIES ==="
-          find build/virgl-arm32-integrated -type f \
-            -name '*.so' 2>/dev/null || true
+          {
+            echo "=== VIRGL ARM32 RUNTIME AUDIT ==="
+            echo "Target ABI: armeabi-v7a"
+            echo "Android API: 26"
+            echo "NDK: 27.2.12479018"
 
-          echo "=== AUDIT FILES ==="
-          find build/runtime-audit -type f 2>/dev/null || true
+            echo "=== LIBRARIES ==="
+
+            find build/virgl-arm32-integrated -type f \
+              -name '*.so' 2>/dev/null || true
+
+            echo "=== AUDIT FILES ==="
+
+            find build/runtime-audit -type f 2>/dev/null || true
+          } | tee build/runtime-audit/summary.txt
 
       - name: Upload runtime audit report
         if: always()
