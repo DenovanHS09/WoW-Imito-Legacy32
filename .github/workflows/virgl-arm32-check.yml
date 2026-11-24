@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   inspect:
-    name: Analyze VirGL architecture
+    name: Analyze VirGL architecture and dependencies
     runs-on: ubuntu-latest
 
     steps:
@@ -27,92 +27,54 @@ jobs:
           test -f patches/virgl/virgl-imito-1.5.7-source.zip
           echo "VirGL 1.5.7 archive found."
 
-      - name: Inspect VirGL build configuration
+      - name: Inspect build configuration
         run: |
           python3 - <<'PY'
           import zipfile
 
           path = "patches/virgl/virgl-imito-1.5.7-source.zip"
 
-          build_files = (
-              "cmakelists.txt",
-              "meson.build",
-              "configure.ac",
-              "makefile",
-              "android.mk",
-              "application.mk",
-              "configure"
+          patterns = (
+              "cmakelists.txt", "meson.build", "configure.ac",
+              "makefile", "android.mk", "application.mk",
+              ".cmake", "configure"
           )
 
-          keywords = (
-              "arm", "aarch64", "android", "host",
-              "target", "cross", "architecture",
-              "processor", "cmake_system",
-              "egl", "gles", "opengl"
+          terms = (
+              "arm", "aarch64", "android", "host", "target",
+              "cross", "architecture", "processor",
+              "cmake_system", "egl", "gles", "opengl",
+              "winlator", "find_package"
           )
 
           with zipfile.ZipFile(path) as archive:
               found = 0
 
               for name in archive.namelist():
-                  if not any(x in name.lower() for x in build_files):
+                  low = name.lower()
+
+                  if not any(p in low for p in patterns):
                       continue
 
                   found += 1
                   print(f"\n=== BUILD FILE: {name} ===")
 
                   try:
-                      content = archive.read(name).decode(
+                      lines = archive.read(name).decode(
                           "utf-8", "replace"
-                      )
+                      ).splitlines()
 
-                      for number, line in enumerate(
-                          content.splitlines(), 1
-                      ):
-                          if any(k in line.lower() for k in keywords):
+                      for number, line in enumerate(lines, 1):
+                          if any(t in line.lower() for t in terms):
                               print(f"{number}: {line[:220]}")
 
                   except Exception as error:
                       print("READ ERROR:", error)
 
-              print("\n=== SUMMARY ===")
-              print("Build configuration files found:", found)
-
-              if found == 0:
-                  print("No recognized build configuration found.")
+              print("\nBuild configuration files found:", found)
           PY
 
-      - name: Inspect archive architecture references
-        run: |
-          python3 - <<'PY'
-          import zipfile
-
-          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
-
-          terms = (
-              "arm32", "armhf", "armv7",
-              "armeabi-v7a", "aarch64", "arm64",
-              "x86", "android"
-          )
-
-          with zipfile.ZipFile(path) as archive:
-              matches = set()
-
-              for name in archive.namelist():
-                  low = name.lower()
-                  for term in terms:
-                      if term in low:
-                          matches.add(term)
-
-              print("Architecture references in filenames:")
-              for term in sorted(matches):
-                  print("-", term)
-
-              if not matches:
-                  print("No architecture references in filenames.")
-          PY
-
-      - name: Read complete CMake configuration
+      - name: Inspect winlator files and references
         run: |
           python3 - <<'PY'
           import zipfile
@@ -120,12 +82,118 @@ jobs:
           path = "patches/virgl/virgl-imito-1.5.7-source.zip"
 
           with zipfile.ZipFile(path) as archive:
-              name = "cpp/virglrenderer/CMakeLists.txt"
-              print("=== COMPLETE CMAKE FILE ===")
-              print(archive.read(name).decode("utf-8", "replace"))
+              names = archive.namelist()
+
+              print("=== FILE PATHS CONTAINING WINLATOR ===")
+              matches = [
+                  n for n in names if "winlator" in n.lower()
+              ]
+
+              if matches:
+                  for name in matches[:100]:
+                      print(name)
+              else:
+                  print("No paths containing winlator.")
+
+              print("\n=== SOURCE REFERENCES TO WINLATOR ===")
+
+              extensions = (
+                  ".c", ".h", ".cpp", ".hpp", ".cmake",
+                  ".txt", ".mk", ".gradle"
+              )
+
+              count = 0
+
+              for name in names:
+                  if not name.lower().endswith(extensions):
+                      continue
+
+                  try:
+                      lines = archive.read(name).decode(
+                          "utf-8", "replace"
+                      ).splitlines()
+
+                      hits = [
+                          (i, line.strip())
+                          for i, line in enumerate(lines, 1)
+                          if "winlator" in line.lower()
+                      ]
+
+                      if hits:
+                          print(f"\n--- {name} ---")
+                          for number, line in hits[:15]:
+                              print(f"{number}: {line[:220]}")
+                              count += 1
+
+                  except Exception:
+                      pass
+
+              if count == 0:
+                  print("No source references found.")
           PY
 
-      - name: Search architecture and dependency requirements
+      - name: Inspect precompiled libraries and ELF architectures
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          import struct
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          def inspect_elf(data):
+              if len(data) < 20 or data[:4] != b"\x7fELF":
+                  return None
+
+              bits = {1: "32-bit", 2: "64-bit"}.get(
+                  data[4], "unknown"
+              )
+
+              endian = {1: "<", 2: ">"}.get(data[5])
+
+              if endian is None:
+                  return f"{bits}, unknown byte order"
+
+              machine = struct.unpack(
+                  endian + "H", data[18:20]
+              )[0]
+
+              arch = {
+                  3: "x86",
+                  40: "ARM",
+                  62: "x86-64",
+                  183: "AArch64"
+              }.get(machine, f"machine {machine}")
+
+              return f"{bits}, {arch}"
+
+          with zipfile.ZipFile(path) as archive:
+              binaries = [
+                  n for n in archive.namelist()
+                  if n.lower().endswith(
+                      (".so", ".a", ".o", ".dll")
+                  )
+              ]
+
+              print("=== BINARY FILES ===")
+
+              if not binaries:
+                  print("No precompiled binary files found.")
+
+              for name in binaries[:150]:
+                  data = archive.read(name)
+                  info = inspect_elf(data)
+
+                  if info:
+                      print(f"{name}: ELF {info}")
+                  elif data.startswith(b"!<arch>\n"):
+                      print(f"{name}: Static archive (inspect members separately)")
+                  else:
+                      print(f"{name}: Binary file, format not identified")
+
+              print("\nTotal binary files:", len(binaries))
+          PY
+
+      - name: Inspect architecture and system dependencies
         run: |
           python3 - <<'PY'
           import zipfile
@@ -137,14 +205,20 @@ jobs:
               "-march=", "-mfpu=", "-marm", "-mthumb",
               "ANDROID_ABI", "CMAKE_ANDROID_ARCH_ABI",
               "aarch64-linux-gnu", "arm-linux-gnueabihf",
-              "libdrm", "gbm", "EGL", "GLES"
+              "libdrm", "gbm", "EGL", "GLES",
+              "winlator", "target_link_libraries",
+              "add_library", "find_library",
+              "find_package", "dlopen", "pthread"
+          )
+
+          extensions = (
+              ".c", ".h", ".cpp", ".hpp",
+              ".cmake", ".txt", ".mk"
           )
 
           with zipfile.ZipFile(path) as archive:
               for name in archive.namelist():
-                  if not name.endswith((
-                      ".c", ".h", ".cpp", ".cmake", ".txt"
-                  )):
+                  if not name.lower().endswith(extensions):
                       continue
 
                   try:
@@ -163,14 +237,50 @@ jobs:
 
                       if matches:
                           print(f"\n=== {name} ===")
-                          for number, line in matches[:20]:
+
+                          for number, line in matches[:25]:
                               print(f"{number}: {line[:200]}")
 
                   except Exception:
                       pass
           PY
 
+      - name: Inspect archive structure
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = "patches/virgl/virgl-imito-1.5.7-source.zip"
+
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+
+              print("=== ARCHIVE SUMMARY ===")
+              print("Total entries:", len(names))
+
+              nested = [
+                  n for n in names
+                  if n.lower().endswith((".zip", ".tar", ".gz"))
+              ]
+
+              print("\nNested archives:")
+              if nested:
+                  for name in nested[:50]:
+                      print(name)
+              else:
+                  print("None found.")
+
+              print("\nTop-level directories:")
+              roots = sorted({
+                  n.split("/")[0]
+                  for n in names if "/" in n
+              })
+
+              for root in roots:
+                  print("-", root)
+          PY
+
       - name: Finish audit
         run: |
-          echo "=== VIRGL AUDIT FINISHED ==="
+          echo "=== VIRGL ARM32 AUDIT FINISHED ==="
           
