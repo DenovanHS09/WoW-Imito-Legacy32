@@ -32,14 +32,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build unzip file curl
 
-      - name: Install Java and Android SDK
+      - name: Install Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Configure Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android NDK and SDK platforms
         run: |
@@ -62,7 +64,6 @@ jobs:
       - name: Fix Winlator native headers
         run: |
           set -e
-          BASE="build/winlator-upstream/app/src/main/cpp/winlator"
 
           python3 - <<'PY'
           from pathlib import Path
@@ -237,7 +238,6 @@ jobs:
           import android.opengl.GLES20;
           import android.opengl.GLES30;
           import android.widget.TextView;
-          import java.util.Locale;
 
           public class MainActivity extends Activity {
               private StringBuilder report;
@@ -305,8 +305,6 @@ jobs:
                       log("EGL version: " + version[0] + "." + version[1]);
                       log("EGL vendor: " +
                           EGL14.eglQueryString(display, EGL14.EGL_VENDOR));
-                      log("EGL extensions: " +
-                          EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS));
 
                       int[] configAttributes = {
                           EGL14.EGL_RENDERABLE_TYPE, 0x40,
@@ -398,11 +396,14 @@ jobs:
                           if (surface != EGL14.EGL_NO_SURFACE) {
                               EGL14.eglDestroySurface(display, surface);
                           }
+
                           if (context != EGL14.EGL_NO_CONTEXT) {
                               EGL14.eglDestroyContext(display, context);
                           }
+
                           EGL14.eglTerminate(display);
                       }
+
                       log("");
                       log("=== TEST FINISHED ===");
                   }
@@ -414,10 +415,10 @@ jobs:
         run: |
           set -e
           curl -L --fail \
-            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+            https://services.gradle.org/distributions/gradle-8.6-bin.zip \
             -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp
-          /tmp/gradle-8.7/bin/gradle \
+          /tmp/gradle-8.6/bin/gradle \
             -p build/android-app \
             --no-daemon \
             assembleDebug
@@ -435,6 +436,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/smoke-test-report
+
           cp build/android-app/app/build/outputs/apk/debug/app-debug.apk \
             build/smoke-test-report/ 2>/dev/null || true
 
