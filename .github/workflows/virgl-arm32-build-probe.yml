@@ -34,6 +34,7 @@ jobs:
         run: |
           set -e
           mkdir -p build/virgl-source
+
           unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
             -d build/virgl-source
 
@@ -42,58 +43,78 @@ jobs:
 
           echo "Both native source trees are present."
 
-      - name: Fix POSIX time declarations
+      - name: Fix Winlator native headers
         run: |
           set -e
 
-          HEADER="build/winlator-upstream/app/src/main/cpp/winlator/include/time_utils.h"
+          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+          TIME_HEADER="$WINLATOR/include/time_utils.h"
+          STRING_HEADER="$WINLATOR/include/string_utils.h"
 
-          test -f "$HEADER"
+          test -f "$TIME_HEADER"
+          test -f "$STRING_HEADER"
 
-          echo "=== ORIGINAL HEADER ==="
-          sed -n '1,60p' "$HEADER"
-
-          python3 - "$HEADER" <<'PY'
+          python3 - "$TIME_HEADER" "$STRING_HEADER" <<'PY'
           import pathlib
           import re
           import sys
 
-          path = pathlib.Path(sys.argv[1])
-          content = path.read_text()
+          def add_include(path, header):
+              path = pathlib.Path(path)
+              content = path.read_text()
 
-          if re.search(r'^\s*#\s*include\s*[<"]time\.h[>"]', content, re.M):
-              print("time.h is already included.")
-          else:
-              guard = re.search(
-                  r'^\s*#\s*define\s+[A-Za-z_][A-Za-z0-9_]*.*$',
-                  content,
-                  re.M
-              )
+              pattern = rf'^\s*#\s*include\s*[<"]{re.escape(header)}[>"]'
 
-              if guard:
-                  position = guard.end()
-                  content = (
-                      content[:position]
-                      + "\n\n#include <time.h>"
-                      + content[position:]
-                  )
+              if re.search(pattern, content, re.M):
+                  print(f"{header} already included in {path.name}")
+                  return
+
+              lines = content.splitlines(keepends=True)
+
+              # Insert after the last existing include directive.
+              positions = [
+                  i for i, line in enumerate(lines)
+                  if re.match(r'^\s*#\s*include\b', line)
+              ]
+
+              if positions:
+                  index = positions[-1] + 1
               else:
-                  content = "#include <time.h>\n" + content
+                  index = 0
 
-              path.write_text(content)
-              print("Inserted #include <time.h>.")
+              lines.insert(index, f"#include <{header}>\n")
+              path.write_text("".join(lines))
 
-          assert re.search(
-              r'^\s*#\s*include\s*[<"]time\.h[>"]',
-              content,
-              re.M
-          ), "time.h include verification failed"
+              print(f"Added <{header}> to {path.name}")
 
-          print("Header correction verified.")
+          time_header = pathlib.Path(sys.argv[1])
+          string_header = pathlib.Path(sys.argv[2])
+
+          add_include(time_header, "time")
+          add_include(string_header, "string")
+          add_include(string_header, "stdlib")
+
+          for path, headers in [
+              (time_header, ["time"]),
+              (string_header, ["string", "stdlib"])
+          ]:
+              content = path.read_text()
+
+              for header in headers:
+                  pattern = rf'^\s*#\s*include\s*[<"]{re.escape(header)}[>"]'
+                  assert re.search(pattern, content, re.M), (
+                      f"Missing {header}.h in {path}"
+                  )
+
+              print(f"Verified: {path.name}")
+
           PY
 
-          echo "=== CORRECTED HEADER ==="
-          sed -n '1,60p' "$HEADER"
+          echo "=== TIME_UTILS.H ==="
+          sed -n '1,45p' "$TIME_HEADER"
+
+          echo "=== STRING_UTILS.H ==="
+          sed -n '1,45p' "$STRING_HEADER"
 
       - name: Install Android build tools
         run: |
@@ -210,7 +231,7 @@ jobs:
           echo "Android API: 26"
           echo "NDK: 27.2.12479018"
           echo "POSIX feature level: 200809L"
-          echo "time_utils.h: explicit time.h include"
+          echo "Header fixes: time.h, string.h, stdlib.h"
 
           echo "=== CONFIGURATION LOG ==="
           if [ -f build/integrated-configure.log ]; then
