@@ -106,7 +106,7 @@ jobs:
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=armeabi-v7a \
-            -DANDROID_PLATFORM=android-23 \
+            -DANDROID_PLATFORM=android-26 \
             -DANDROID_STL=c++_shared \
             -DCMAKE_BUILD_TYPE=Release \
             2>&1 | tee build/integrated-configure.log
@@ -140,6 +140,7 @@ jobs:
         run: |
           echo "=== INTEGRATED ARM32 BUILD REPORT ==="
           echo "Target ABI: armeabi-v7a"
+          echo "Android API: 26"
           echo "NDK: 27.2.12479018"
 
           echo "=== CONFIGURATION LOG ==="
