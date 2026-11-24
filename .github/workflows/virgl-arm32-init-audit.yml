@@ -1,0 +1,96 @@
+
+name: VirGL ARM32 Initialization Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  init-audit:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Legacy32 repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Winlator source
+        uses: actions/checkout@v4
+        with:
+          repository: brunodev85/winlator-app
+          ref: main
+          path: build/winlator-upstream
+          sparse-checkout: |
+            app/src/main/cpp/winlator
+          sparse-checkout-cone-mode: true
+
+      - name: Extract VirGL source
+        run: |
+          set -e
+          mkdir -p build/virgl-source
+          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
+            -d build/virgl-source
+
+      - name: Audit initialization and EGL integration
+        shell: bash
+        run: |
+          mkdir -p build/init-audit
+
+          VIRGL="build/virgl-source"
+          WIN="build/winlator-upstream/app/src/main/cpp/winlator"
+          OUT="build/init-audit/report.txt"
+
+          {
+            echo "=== LEGACY32 VIRGL INITIALIZATION AUDIT ==="
+            echo "Branch: $GITHUB_REF"
+            echo
+
+            echo "=== 1. VIRGL JNI FUNCTIONS ==="
+            grep -R -n -E \
+              'Java_.*VirGLRendererComponent|handleNewConnection|handleRequest|destroyClient|destroyRenderer|getCurrentEGLContextPtr' \
+              "$VIRGL" || true
+
+            echo
+            echo "=== 2. EGL CONTEXT REFERENCES ==="
+            grep -R -n -E \
+              'globalEGLContext|eglCreateContext|eglMakeCurrent|eglGetCurrentContext|eglDestroyContext' \
+              "$VIRGL" "$WIN" || true
+
+            echo
+            echo "=== 3. VIRGL CONNECTION AND REQUEST FLOW ==="
+            grep -R -n -E \
+              'handleNewConnection|handleRequest|virgl_renderer_init|virgl_renderer_reset|virgl_renderer_cleanup|virgl_renderer_context_create' \
+              "$VIRGL" || true
+
+            echo
+            echo "=== 4. VIRGL SERVER SOURCE FILES ==="
+            find "$VIRGL" -type f \
+              \( -iname '*server*' -o -iname '*renderer*' \) \
+              | sort
+
+            echo
+            echo "=== 5. WINLATOR EGL SOURCE FILES ==="
+            grep -R -l -E \
+              'eglCreateContext|eglMakeCurrent|eglGetCurrentContext' \
+              "$WIN" || true
+
+            echo
+            echo "=== 6. JNI LIBRARY LOAD REFERENCES ==="
+            grep -R -n -E \
+              'loadLibrary.*(winlator|virglrenderer)|System.loadLibrary' \
+              build/winlator-upstream/app/src/main 2>/dev/null || true
+
+            echo
+            echo "=== AUDIT FINISHED ==="
+          } > "$OUT"
+
+          cat "$OUT"
+
+      - name: Upload initialization audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: virgl-arm32-init-audit
+          path: build/init-audit/
+          if-no-files-found: error
+          
