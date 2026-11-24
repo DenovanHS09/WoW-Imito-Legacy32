@@ -5,9 +5,6 @@ on:
   push:
     branches:
       - Legacy32dev
-    paths:
-      - '.github/workflows/virgl-arm32-runtime-audit.yml'
-      - 'patches/virgl/**'
 
   workflow_dispatch:
 
