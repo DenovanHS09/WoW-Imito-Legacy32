@@ -1,5 +1,5 @@
 
-name: VirGL ARM32 Build Probe
+name: VirGL ARM32 Integrated Build Probe
 
 on:
   workflow_dispatch:
@@ -12,21 +12,33 @@ on:
 
 jobs:
   arm32-build:
-    name: Test VirGL for armeabi-v7a
+    name: Build Winlator and VirGL for ARM32
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Legacy32 repository
         uses: actions/checkout@v4
 
-      - name: Check source archive
+      - name: Checkout upstream Winlator native dependency
+        uses: actions/checkout@v4
+        with:
+          repository: brunodev85/winlator-app
+          ref: main
+          path: build/winlator-upstream
+          fetch-depth: 1
+          sparse-checkout: |
+            app/src/main/cpp/winlator
+          sparse-checkout-cone-mode: true
+
+      - name: Prepare VirGL source
         run: |
           set -e
-          test -f patches/virgl/virgl-imito-1.5.7-source.zip
           mkdir -p build/virgl-source
-          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip -d build/virgl-source
+          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
+            -d build/virgl-source
           test -f build/virgl-source/cpp/virglrenderer/CMakeLists.txt
-          echo "VirGL source archive found."
+          test -f build/winlator-upstream/app/src/main/cpp/winlator/CMakeLists.txt
+          echo "Both native source trees are present."
 
       - name: Install Android build tools
         run: |
@@ -36,116 +48,121 @@ jobs:
       - name: Locate Android SDK tools
         run: |
           set -e
-
-          echo "=== SDK ROOT ==="
-          echo "$ANDROID_SDK_ROOT"
-
-          echo "=== SEARCHING SDKMANAGER ==="
-
           SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
             -type f -name sdkmanager 2>/dev/null | head -1 || true)"
-
           if [ -z "$SDKMANAGER" ]; then
             echo "sdkmanager not found."
-            echo "=== SDK DIRECTORY ==="
-            find "$ANDROID_SDK_ROOT" -maxdepth 5 -type f | head -100
             exit 1
           fi
-
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-
-          echo "Found: $SDKMANAGER"
           "$SDKMANAGER" --version
 
       - name: Install Android NDK
         run: |
           set -e
-
-          echo "=== INSTALLED SDK PACKAGES ==="
-          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --list_installed
-
-          echo "=== INSTALLING NDK ==="
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
             "ndk;27.2.12479018"
-
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" \
+            >> "$GITHUB_ENV"
           test -f "$ANDROID_SDK_ROOT/ndk/27.2.12479018/build/cmake/android.toolchain.cmake"
-
           echo "NDK installation verified."
 
-      - name: Inspect ARM32 dependencies
+      - name: Create integrated CMake project
         run: |
-          echo "=== VIRGL CMAKE CONFIGURATION ==="
-          sed -n '1,180p' build/virgl-source/cpp/virglrenderer/CMakeLists.txt
+          set -e
+          mkdir -p build/integration
 
-          echo "=== JNI AND GRAPHICS DEPENDENCIES ==="
-          grep -RniE 'winlator\.h|winlator|jni\.h|EGL|GLES' \
-            build/virgl-source/cpp | head -100 || true
+          cat > build/integration/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.22.1)
+          project(Legacy32VirGLIntegration C CXX)
 
-          echo "=== ARCHITECTURE REFERENCES ==="
-          grep -RniE '__arm__|__aarch64__|armv7|aarch64' \
-            build/virgl-source/cpp | head -80 || true
+          add_subdirectory(
+            "${CMAKE_CURRENT_LIST_DIR}/../winlator-upstream/app/src/main/cpp/winlator"
+            winlator
+          )
 
-      - name: Configure VirGL for ARM32
+          add_subdirectory(
+            "${CMAKE_CURRENT_LIST_DIR}/../virgl-source/cpp/virglrenderer"
+            virglrenderer
+          )
+          EOF
+
+          echo "=== INTEGRATION CMAKE ==="
+          cat build/integration/CMakeLists.txt
+
+      - name: Record upstream source revision
+        run: |
+          echo "=== WINLATOR UPSTREAM COMMIT ==="
+          git -C build/winlator-upstream rev-parse HEAD
+
+      - name: Configure integrated ARM32 build
         id: configure
         continue-on-error: true
         run: |
           set -o pipefail
-
-          cmake -S build/virgl-source/cpp/virglrenderer \
-            -B build/virgl-arm32 \
+          cmake -S build/integration \
+            -B build/virgl-arm32-integrated \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-23 \
             -DANDROID_STL=c++_shared \
             -DCMAKE_BUILD_TYPE=Release \
-            2>&1 | tee build/configure.log
+            2>&1 | tee build/integrated-configure.log
 
-      - name: Compile VirGL ARM32
+      - name: Compile integrated ARM32 libraries
         id: compile
         if: steps.configure.outcome == 'success'
         continue-on-error: true
         run: |
           set -o pipefail
-          cmake --build build/virgl-arm32 --parallel 2 \
-            2>&1 | tee build/compile.log
+          cmake --build build/virgl-arm32-integrated --parallel 2 \
+            2>&1 | tee build/integrated-compile.log
 
-      - name: Report results
+      - name: Inspect generated libraries
         if: always()
         run: |
-          echo "=== VIRGL ARM32 BUILD PROBE ==="
+          echo "=== GENERATED LIBRARIES ==="
+          find build/virgl-arm32-integrated -type f \
+            \( -name '*.so' -o -name '*.a' \) 2>/dev/null || true
+
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          for LIB in $(find build/virgl-arm32-integrated -type f -name '*.so' 2>/dev/null); do
+            echo "=== $LIB ==="
+            file "$LIB"
+            "$READELF" -h "$LIB" | grep -E 'Class:|Machine:'
+          done
+
+      - name: Final diagnostic report
+        if: always()
+        run: |
+          echo "=== INTEGRATED ARM32 BUILD REPORT ==="
           echo "Target ABI: armeabi-v7a"
-          echo "Target OS: Android"
           echo "NDK: 27.2.12479018"
 
-          echo "=== CONFIGURATION ==="
-          if [ -f build/configure.log ]; then
-            tail -60 build/configure.log
+          echo "=== CONFIGURATION LOG ==="
+          if [ -f build/integrated-configure.log ]; then
+            tail -60 build/integrated-configure.log
           else
-            echo "Configuration did not produce a log."
+            echo "No configuration log."
           fi
 
-          echo "=== COMPILATION ==="
-          if [ -f build/compile.log ]; then
-            tail -80 build/compile.log
+          echo "=== COMPILATION LOG ==="
+          if [ -f build/integrated-compile.log ]; then
+            tail -100 build/integrated-compile.log
           else
             echo "Compilation was not reached."
           fi
-
-          echo "=== GENERATED LIBRARIES ==="
-          find build/virgl-arm32 -type f \
-            \( -name '*.so' -o -name '*.a' \) 2>/dev/null || true
 
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: virgl-arm32-build-report
+          name: virgl-arm32-integrated-report
           path: |
-            build/configure.log
-            build/compile.log
+            build/integrated-configure.log
+            build/integrated-compile.log
           if-no-files-found: ignore
           
