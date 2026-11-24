@@ -108,6 +108,7 @@ jobs:
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-26 \
             -DANDROID_STL=c++_shared \
+            -DCMAKE_C_FLAGS="-D_POSIX_C_SOURCE=200809L" \
             -DCMAKE_BUILD_TYPE=Release \
             2>&1 | tee build/integrated-configure.log
 
@@ -142,6 +143,7 @@ jobs:
           echo "Target ABI: armeabi-v7a"
           echo "Android API: 26"
           echo "NDK: 27.2.12479018"
+          echo "POSIX feature level: 200809L"
 
           echo "=== CONFIGURATION LOG ==="
           if [ -f build/integrated-configure.log ]; then
