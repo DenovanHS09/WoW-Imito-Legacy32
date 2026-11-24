@@ -39,7 +39,9 @@ jobs:
           java-version: '17'
 
       - name: Configure Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android NDK and SDK platforms
         run: |
@@ -63,7 +65,6 @@ jobs:
         run: |
           set -e
           BASE="build/winlator-upstream/app/src/main/cpp/winlator"
-
           python3 - <<'PY'
           from pathlib import Path
 
@@ -75,7 +76,6 @@ jobs:
 
               content = path.read_text()
               include = f"#include <{header}>"
-
               if include not in content:
                   path.write_text(include + "\n" + content)
                   print(f"Added {include} to {path.name}")
@@ -102,9 +102,7 @@ jobs:
       - name: Build ARM32 native libraries
         run: |
           set -e
-
           NDK="$ANDROID_HOME/ndk/27.2.12479018"
-
           cmake -S build/arm32-native -B build/native-build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
@@ -114,7 +112,6 @@ jobs:
             -DCMAKE_C_FLAGS="-D_POSIX_C_SOURCE=200809L" \
             -DWINLATOR_SOURCE="$GITHUB_WORKSPACE/build/winlator-upstream/app/src/main/cpp/winlator" \
             -DVIRGL_SOURCE="$GITHUB_WORKSPACE/build/virgl-source/cpp/virglrenderer"
-
           cmake --build build/native-build --parallel 2
 
       - name: Package native libraries for Android
@@ -129,7 +126,6 @@ jobs:
 
           test -n "$WINLATOR"
           test -n "$VIRGL"
-
           cp "$WINLATOR" "$DEST/"
           cp "$VIRGL" "$DEST/"
 
@@ -162,7 +158,6 @@ jobs:
                   mavenCentral()
               }
           }
-
           rootProject.name = "Legacy32SmokeTest"
           include(":app")
           EOF
@@ -193,7 +188,6 @@ jobs:
                   targetSdk 28
                   versionCode 1
                   versionName '0.1-arm32-test'
-
                   ndk {
                       abiFilters 'armeabi-v7a'
                   }
@@ -237,7 +231,6 @@ jobs:
           import android.opengl.GLES20;
           import android.opengl.GLES30;
           import android.widget.TextView;
-          import java.util.Locale;
 
           public class MainActivity extends Activity {
               private StringBuilder report;
@@ -251,7 +244,6 @@ jobs:
               @Override
               public void onCreate(Bundle state) {
                   super.onCreate(state);
-
                   report = new StringBuilder();
                   output = new TextView(this);
                   output.setTextSize(13);
@@ -388,6 +380,7 @@ jobs:
                   } catch (Throwable error) {
                       log("[EGL/GLES FAILURE]");
                       log(error.getClass().getName() + ": " + error.getMessage());
+
                   } finally {
                       if (display != EGL14.EGL_NO_DISPLAY) {
                           EGL14.eglMakeCurrent(display,
@@ -398,11 +391,14 @@ jobs:
                           if (surface != EGL14.EGL_NO_SURFACE) {
                               EGL14.eglDestroySurface(display, surface);
                           }
+
                           if (context != EGL14.EGL_NO_CONTEXT) {
                               EGL14.eglDestroyContext(display, context);
                           }
+
                           EGL14.eglTerminate(display);
                       }
+
                       log("");
                       log("=== TEST FINISHED ===");
                   }
@@ -435,6 +431,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/smoke-test-report
+
           cp build/android-app/app/build/outputs/apk/debug/app-debug.apk \
             build/smoke-test-report/ 2>/dev/null || true
 
