@@ -1,0 +1,459 @@
+
+name: ARM32 Android Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-smoke-test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Legacy32
+        uses: actions/checkout@v4
+        with:
+          ref: legacy32-dev
+
+      - name: Checkout Winlator native sources
+        uses: actions/checkout@v4
+        with:
+          repository: brunodev85/winlator-app
+          ref: main
+          path: build/winlator-upstream
+          sparse-checkout: |
+            app/src/main/cpp/winlator
+          sparse-checkout-cone-mode: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build unzip file curl
+
+      - name: Install Java and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and SDK platforms
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+
+      - name: Extract VirGL source
+        run: |
+          set -e
+          mkdir -p build/virgl-source
+          unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
+            -d build/virgl-source
+
+          test -f build/winlator-upstream/app/src/main/cpp/winlator/CMakeLists.txt
+          test -f build/virgl-source/cpp/virglrenderer/CMakeLists.txt
+
+      - name: Fix Winlator native headers
+        run: |
+          set -e
+          BASE="build/winlator-upstream/app/src/main/cpp/winlator"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          base = Path("build/winlator-upstream/app/src/main/cpp/winlator")
+
+          def add_include(path, header):
+              if not path.exists():
+                  raise SystemExit(f"Missing header: {path}")
+
+              content = path.read_text()
+              include = f"#include <{header}>"
+
+              if include not in content:
+                  path.write_text(include + "\n" + content)
+                  print(f"Added {include} to {path.name}")
+              else:
+                  print(f"Already present: {include}")
+
+          add_include(base / "include/time_utils.h", "time.h")
+          add_include(base / "include/string_utils.h", "string.h")
+          add_include(base / "include/string_utils.h", "stdlib.h")
+          PY
+
+      - name: Create integrated native CMake project
+        run: |
+          mkdir -p build/arm32-native
+
+          cat > build/arm32-native/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.22)
+          project(Legacy32SmokeNative C CXX)
+
+          add_subdirectory("${WINLATOR_SOURCE}" winlator)
+          add_subdirectory("${VIRGL_SOURCE}" virglrenderer)
+          EOF
+
+      - name: Build ARM32 native libraries
+        run: |
+          set -e
+
+          NDK="$ANDROID_HOME/ndk/27.2.12479018"
+
+          cmake -S build/arm32-native -B build/native-build \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_C_FLAGS="-D_POSIX_C_SOURCE=200809L" \
+            -DWINLATOR_SOURCE="$GITHUB_WORKSPACE/build/winlator-upstream/app/src/main/cpp/winlator" \
+            -DVIRGL_SOURCE="$GITHUB_WORKSPACE/build/virgl-source/cpp/virglrenderer"
+
+          cmake --build build/native-build --parallel 2
+
+      - name: Package native libraries for Android
+        run: |
+          set -e
+
+          DEST="build/android-app/app/src/main/jniLibs/armeabi-v7a"
+          mkdir -p "$DEST"
+
+          WINLATOR="$(find build/native-build -name libwinlator.so -type f | head -n 1)"
+          VIRGL="$(find build/native-build -name libvirglrenderer.so -type f | head -n 1)"
+
+          test -n "$WINLATOR"
+          test -n "$VIRGL"
+
+          cp "$WINLATOR" "$DEST/"
+          cp "$VIRGL" "$DEST/"
+
+          file "$DEST/libwinlator.so"
+          file "$DEST/libvirglrenderer.so"
+
+          readelf -h "$DEST/libwinlator.so" | grep -E 'Class:|Machine:'
+          readelf -h "$DEST/libvirglrenderer.so" | grep -E 'Class:|Machine:'
+
+      - name: Create minimal Android project
+        run: |
+          set -e
+          APP="build/android-app"
+
+          mkdir -p "$APP/app/src/main/java/com/imito/legacy32"
+
+          cat > "$APP/settings.gradle" <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "Legacy32SmokeTest"
+          include(":app")
+          EOF
+
+          cat > "$APP/build.gradle" <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.4.2' apply false
+          }
+          EOF
+
+          cat > "$APP/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+
+          cat > "$APP/app/build.gradle" <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.imito.legacy32'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.imito.legacy32.smoketest'
+                  minSdk 26
+                  targetSdk 28
+                  versionCode 1
+                  versionName '0.1-arm32-test'
+
+                  ndk {
+                      abiFilters 'armeabi-v7a'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF
+
+          cat > "$APP/app/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:label="Legacy32 Smoke Test"
+                  android:allowBackup="false">
+                  <activity
+                      android:name="com.imito.legacy32.MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > "$APP/app/src/main/java/com/imito/legacy32/MainActivity.java" <<'EOF'
+          package com.imito.legacy32;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.opengl.EGL14;
+          import android.opengl.EGLConfig;
+          import android.opengl.EGLContext;
+          import android.opengl.EGLDisplay;
+          import android.opengl.EGLSurface;
+          import android.opengl.GLES20;
+          import android.opengl.GLES30;
+          import android.widget.TextView;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              private StringBuilder report;
+              private TextView output;
+
+              private void log(String message) {
+                  report.append(message).append("\n");
+                  output.setText(report.toString());
+              }
+
+              @Override
+              public void onCreate(Bundle state) {
+                  super.onCreate(state);
+
+                  report = new StringBuilder();
+                  output = new TextView(this);
+                  output.setTextSize(13);
+                  output.setPadding(20, 20, 20, 20);
+                  setContentView(output);
+
+                  log("WoW-Imito Legacy32");
+                  log("Android ARM32 Smoke Test");
+                  log("================================");
+
+                  loadNative("winlator");
+                  loadNative("virglrenderer");
+
+                  log("");
+                  log("ABI: " + android.os.Build.SUPPORTED_ABIS[0]);
+                  log("Android API: " + android.os.Build.VERSION.SDK_INT);
+
+                  testEGL();
+              }
+
+              private void loadNative(String name) {
+                  try {
+                      System.loadLibrary(name);
+                      log("[OK] Loaded lib" + name + ".so");
+                  } catch (Throwable error) {
+                      log("[FAIL] lib" + name + ".so");
+                      log(error.getClass().getName() + ": " + error.getMessage());
+                  }
+              }
+
+              private void testEGL() {
+                  EGLDisplay display = EGL14.EGL_NO_DISPLAY;
+                  EGLContext context = EGL14.EGL_NO_CONTEXT;
+                  EGLSurface surface = EGL14.EGL_NO_SURFACE;
+
+                  try {
+                      log("");
+                      log("=== EGL TEST ===");
+
+                      display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+                      if (display == EGL14.EGL_NO_DISPLAY) {
+                          throw new RuntimeException("eglGetDisplay failed");
+                      }
+
+                      int[] version = new int[2];
+                      if (!EGL14.eglInitialize(display, version, 0, version, 1)) {
+                          throw new RuntimeException("eglInitialize failed: " +
+                              EGL14.eglGetError());
+                      }
+
+                      log("EGL version: " + version[0] + "." + version[1]);
+                      log("EGL vendor: " +
+                          EGL14.eglQueryString(display, EGL14.EGL_VENDOR));
+                      log("EGL extensions: " +
+                          EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS));
+
+                      int[] configAttributes = {
+                          EGL14.EGL_RENDERABLE_TYPE, 0x40,
+                          EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                          EGL14.EGL_RED_SIZE, 8,
+                          EGL14.EGL_GREEN_SIZE, 8,
+                          EGL14.EGL_BLUE_SIZE, 8,
+                          EGL14.EGL_NONE
+                      };
+
+                      EGLConfig[] configs = new EGLConfig[1];
+                      int[] count = new int[1];
+
+                      if (!EGL14.eglChooseConfig(display, configAttributes, 0,
+                              configs, 0, 1, count, 0) || count[0] == 0) {
+                          throw new RuntimeException("No EGL ES3 config");
+                      }
+
+                      int[] contextAttributes = {
+                          0x3098, 3,
+                          EGL14.EGL_NONE
+                      };
+
+                      context = EGL14.eglCreateContext(display, configs[0],
+                          EGL14.EGL_NO_CONTEXT, contextAttributes, 0);
+
+                      if (context == EGL14.EGL_NO_CONTEXT) {
+                          throw new RuntimeException("ES3 context failed: " +
+                              EGL14.eglGetError());
+                      }
+
+                      int[] surfaceAttributes = {
+                          EGL14.EGL_WIDTH, 16,
+                          EGL14.EGL_HEIGHT, 16,
+                          EGL14.EGL_NONE
+                      };
+
+                      surface = EGL14.eglCreatePbufferSurface(display,
+                          configs[0], surfaceAttributes, 0);
+
+                      if (surface == EGL14.EGL_NO_SURFACE) {
+                          throw new RuntimeException("Pbuffer creation failed");
+                      }
+
+                      if (!EGL14.eglMakeCurrent(display, surface, surface, context)) {
+                          throw new RuntimeException("eglMakeCurrent failed");
+                      }
+
+                      log("[OK] EGL ES3 context created");
+                      log("GL vendor: " + GLES20.glGetString(GLES20.GL_VENDOR));
+                      log("GL renderer: " + GLES20.glGetString(GLES20.GL_RENDERER));
+                      log("GL version: " + GLES20.glGetString(GLES20.GL_VERSION));
+
+                      int[] extensionCount = new int[1];
+                      GLES30.glGetIntegerv(0x821D, extensionCount, 0);
+                      log("GLES extensions: " + extensionCount[0]);
+
+                      String[] checks = {
+                          "GL_EXT_color_buffer_float",
+                          "GL_EXT_texture_buffer",
+                          "GL_EXT_texture_storage",
+                          "GL_EXT_clip_control",
+                          "GL_EXT_multisampled_render_to_texture"
+                      };
+
+                      for (String extension : checks) {
+                          boolean found = false;
+                          for (int i = 0; i < extensionCount[0]; i++) {
+                              String value = GLES30.glGetStringi(
+                                  GLES20.GL_EXTENSIONS, i);
+                              if (extension.equals(value)) {
+                                  found = true;
+                                  break;
+                              }
+                          }
+                          log((found ? "[YES] " : "[NO]  ") + extension);
+                      }
+
+                  } catch (Throwable error) {
+                      log("[EGL/GLES FAILURE]");
+                      log(error.getClass().getName() + ": " + error.getMessage());
+                  } finally {
+                      if (display != EGL14.EGL_NO_DISPLAY) {
+                          EGL14.eglMakeCurrent(display,
+                              EGL14.EGL_NO_SURFACE,
+                              EGL14.EGL_NO_SURFACE,
+                              EGL14.EGL_NO_CONTEXT);
+
+                          if (surface != EGL14.EGL_NO_SURFACE) {
+                              EGL14.eglDestroySurface(display, surface);
+                          }
+                          if (context != EGL14.EGL_NO_CONTEXT) {
+                              EGL14.eglDestroyContext(display, context);
+                          }
+                          EGL14.eglTerminate(display);
+                      }
+                      log("");
+                      log("=== TEST FINISHED ===");
+                  }
+              }
+          }
+          EOF
+
+      - name: Build Android APK
+        run: |
+          set -e
+          curl -L --fail \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+            -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-8.7/bin/gradle \
+            -p build/android-app \
+            --no-daemon \
+            assembleDebug
+
+      - name: Verify APK architecture
+        run: |
+          set -e
+          APK="build/android-app/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | head -n 5
+          unzip -l "$APK" | grep 'lib/armeabi-v7a/'
+
+      - name: Prepare diagnostic artifact
+        if: always()
+        run: |
+          mkdir -p build/smoke-test-report
+          cp build/android-app/app/build/outputs/apk/debug/app-debug.apk \
+            build/smoke-test-report/ 2>/dev/null || true
+
+          find build/native-build -name '*.so' -exec file {} \; \
+            > build/smoke-test-report/native-libraries.txt 2>/dev/null || true
+
+          {
+            echo "Legacy32 Android Smoke Test"
+            echo "Branch: legacy32-dev"
+            echo "ABI: armeabi-v7a"
+            echo "Android minimum API: 26"
+          } > build/smoke-test-report/README.txt
+
+      - name: Upload Smoke Test APK and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy32-android-smoke-test
+          path: build/smoke-test-report/
+          if-no-files-found: warn
+          retention-days: 7
+          
