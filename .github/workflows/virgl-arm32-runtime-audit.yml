@@ -603,8 +603,14 @@ jobs:
       # 15. UPLOAD ARTIFACT
       # --------------------------------------------------
 
+      
       - name: Upload runtime audit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: virgl-arm32-run
+          name: virgl-arm32-runtime-audit
+          path: |
+            build/runtime-audit/
+            build/virgl-arm32-integrated/**/*.so
+          if-no-files-found: warn
+          compression-level: 6
