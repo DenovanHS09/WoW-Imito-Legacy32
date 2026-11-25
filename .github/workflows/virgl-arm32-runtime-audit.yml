@@ -29,6 +29,7 @@ jobs:
           fetch-depth: 1
           sparse-checkout: |
             app/src/main/cpp/winlator
+            app/src/main/java
           sparse-checkout-cone-mode: true
 
       - name: Prepare VirGL source
@@ -162,16 +163,20 @@ jobs:
               > "build/runtime-audit/$NAME.symbols.txt"
 
             echo "=== $NAME ELF HEADER ==="
+
             grep -E 'Class:|Machine:|OS/ABI:|ABI Version:' \
               "build/runtime-audit/$NAME.elf-header.txt"
 
             echo "=== $NAME DT_NEEDED ==="
+
             grep 'NEEDED' "build/runtime-audit/$NAME.dynamic.txt" || true
 
             echo "=== $NAME UNDEFINED SYMBOLS ==="
+
             grep ' UND ' "build/runtime-audit/$NAME.symbols.txt" || true
 
             echo "=== $NAME JNI EXPORTS ==="
+
             grep 'Java_' "build/runtime-audit/$NAME.symbols.txt" || true
           done
 
@@ -255,6 +260,55 @@ jobs:
           echo "=== VIRGL DYNAMIC SYMBOL ==="
           cat build/runtime-audit/global-egl-context-virgl-symbol.txt
 
+      - name: Audit EGL Context Initialization Order
+        run: |
+          set -e
+
+          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          WINLATOR_JAVA="build/winlator-upstream/app/src/main/java"
+          LOCAL_JAVA="app/src/main/java"
+
+          OUT="build/runtime-audit/egl-order-audit.txt"
+
+          mkdir -p build/runtime-audit
+          : > "$OUT"
+
+          echo "=== GPU HELPER EGL IMPLEMENTATION ===" >> "$OUT"
+
+          grep -RIn -C 20 -E \
+            'globalEGLContext|eglGetCurrentContext|eglCreateContext|setGlobalEGLContext|createOffscreenEGLContext' \
+            "$WINLATOR" >> "$OUT" 2>/dev/null || true
+
+          echo "=== VIRGL EGL CONTEXT CREATION ===" >> "$OUT"
+
+          grep -RIn -C 20 -E \
+            'eglCreateContext|globalEGLContext|eglMakeCurrent|eglDestroyContext' \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== VIRGL JNI CONTEXT IMPLEMENTATION ===" >> "$OUT"
+
+          grep -RIn -C 20 -E \
+            'getCurrentEGLContextPtr|handleNewConnection|handleRequest|destroyRenderer' \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== JAVA EGL AND VIRGL CALL SITES ===" >> "$OUT"
+
+          for JAVA_DIR in "$LOCAL_JAVA" "$WINLATOR_JAVA"; do
+            if [ -d "$JAVA_DIR" ]; then
+              echo "--- SEARCHING $JAVA_DIR ---" >> "$OUT"
+
+              grep -RIn -C 8 -E \
+                'setGlobalEGLContext|createOffscreenEGLContext|getCurrentEGLContextPtr|handleNewConnection|VirGLRendererComponent|startEnvironmentComponents|onSurfaceCreated|eglMakeCurrent' \
+                "$JAVA_DIR" >> "$OUT" 2>/dev/null || true
+            fi
+          done
+
+          echo "=== AUDIT COMPLETE ===" >> "$OUT"
+
+          cat "$OUT"
+
       - name: Generate runtime audit summary
         if: always()
         run: |
@@ -267,11 +321,14 @@ jobs:
             echo "NDK: 27.2.12479018"
 
             echo "=== LIBRARIES ==="
+
             find build/virgl-arm32-integrated -type f \
               -name '*.so' 2>/dev/null || true
 
             echo "=== AUDIT FILES ==="
+
             find build/runtime-audit -type f 2>/dev/null || true
+
           } | tee build/runtime-audit/summary.txt
 
       - name: Upload runtime audit report
