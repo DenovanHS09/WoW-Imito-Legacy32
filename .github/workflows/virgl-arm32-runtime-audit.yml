@@ -35,6 +35,7 @@ jobs:
       - name: Prepare VirGL source
         run: |
           set -e
+
           mkdir -p build/virgl-source
 
           unzip -q patches/virgl/virgl-imito-1.5.7-source.zip \
@@ -370,6 +371,95 @@ jobs:
           grep -RIn -C 5 -E \
             'eglGetError|EGL_BAD_MATCH|EGL_BAD_CONTEXT|EGL_BAD_DISPLAY|EGL_NO_CONTEXT|EGL_CONTEXT_CLIENT_VERSION' \
             "$WIN" "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== AUDIT COMPLETE ===" >> "$OUT"
+
+          cat "$OUT"
+
+      - name: Audit Connector Thread and View Lifecycle
+        shell: bash
+        run: |
+          set -e
+
+          JAVA_ROOTS=(
+            "build/winlator-upstream/app/src/main/java"
+            "app/src/main/java"
+          )
+
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          OUT="build/runtime-audit/connector-thread-lifecycle.txt"
+
+          mkdir -p build/runtime-audit
+          : > "$OUT"
+
+          dump_named_files() {
+            TARGET="$1"
+            FOUND=0
+
+            for ROOT in "${JAVA_ROOTS[@]}"; do
+              if [ ! -d "$ROOT" ]; then
+                continue
+              fi
+
+              while IFS= read -r -d '' FILE; do
+                FOUND=1
+
+                {
+                  echo ""
+                  echo "========================================"
+                  echo "FILE: $FILE"
+                  echo "========================================"
+                  nl -ba "$FILE"
+                } >> "$OUT"
+
+              done < <(find "$ROOT" -type f -name "$TARGET" -print0)
+            done
+
+            if [ "$FOUND" -eq 0 ]; then
+              echo "FILE NOT FOUND: $TARGET" >> "$OUT"
+            fi
+          }
+
+          echo "=== 1. CONNECTOR IMPLEMENTATION ===" >> "$OUT"
+
+          dump_named_files "XConnectorEpoll.java"
+
+          echo "=== 2. VIRGL COMPONENT ===" >> "$OUT"
+
+          dump_named_files "VirGLRendererComponent.java"
+
+          echo "=== 3. ENVIRONMENT STARTUP ===" >> "$OUT"
+
+          dump_named_files "XEnvironment.java"
+
+          echo "=== 4. XSERVER VIEW ===" >> "$OUT"
+
+          dump_named_files "XServerView.java"
+
+          echo "=== 5. GL RENDERER ===" >> "$OUT"
+
+          dump_named_files "GLRenderer.java"
+
+          echo "=== 6. ACTIVITY VIEW AND STARTUP ORDER ===" >> "$OUT"
+
+          dump_named_files "XServerDisplayActivity.java"
+
+          echo "=== 7. JAVA STARTUP AND THREAD REFERENCES ===" >> "$OUT"
+
+          for ROOT in "${JAVA_ROOTS[@]}"; do
+            if [ -d "$ROOT" ]; then
+              grep -RIn -C 12 -E \
+                'startEnvironmentComponents|VirGLRendererComponent|XConnectorEpoll|onSurfaceCreated|setGlobalEGLContext|handleNewConnection|new Thread|Thread\.start|ExecutorService|HandlerThread' \
+                "$ROOT" >> "$OUT" 2>/dev/null || true
+            fi
+          done
+
+          echo "=== 8. NATIVE VIRGL INITIALIZATION ===" >> "$OUT"
+
+          grep -RIn -C 15 -E \
+            'handleNewConnection|virgl_server_renderer_init|virgl_server_egl_init|eglCreateContext|eglMakeCurrent|globalEGLContext' \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
 
           echo "=== AUDIT COMPLETE ===" >> "$OUT"
 
