@@ -97,7 +97,6 @@ jobs:
               ]
 
               index = positions[-1] + 1 if positions else 0
-
               lines.insert(index, f"#include <{header}>\n")
               path.write_text("".join(lines))
 
@@ -304,6 +303,73 @@ jobs:
                 "$JAVA_DIR" >> "$OUT" 2>/dev/null || true
             fi
           done
+
+          echo "=== AUDIT COMPLETE ===" >> "$OUT"
+
+          cat "$OUT"
+
+      - name: Audit EGL Config and Thread Safety
+        shell: bash
+        run: |
+          set -e
+
+          WIN="build/winlator-upstream/app/src/main"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          WIN_JAVA="build/winlator-upstream/app/src/main/java"
+          LOCAL_JAVA="app/src/main/java"
+
+          OUT="build/runtime-audit/egl-config-thread-audit.txt"
+
+          mkdir -p build/runtime-audit
+          : > "$OUT"
+
+          echo "=== 1. WINLATOR EGL CONFIGURATION ===" >> "$OUT"
+
+          grep -RIn -C 12 -E \
+            'EGL_ALPHA_SIZE|EGL_RED_SIZE|EGL_GREEN_SIZE|EGL_BLUE_SIZE|EGL_RENDERABLE_TYPE|EGL_SURFACE_TYPE|setEGLConfigChooser|eglChooseConfig|setEGLContextClientVersion|EGLConfigChooser' \
+            "$WIN" >> "$OUT" 2>/dev/null || true
+
+          echo "=== 2. VIRGL EGL CONFIGURATION ===" >> "$OUT"
+
+          grep -RIn -C 15 -E \
+            'EGL_ALPHA_SIZE|EGL_RED_SIZE|EGL_GREEN_SIZE|EGL_BLUE_SIZE|EGL_RENDERABLE_TYPE|EGL_SURFACE_TYPE|eglChooseConfig|eglCreateContext|eglBindAPI' \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== 3. VIRGL EGL INITIALIZATION CALLERS ===" >> "$OUT"
+
+          grep -RIn -C 12 -E \
+            'virgl_server_egl_init|virgl_server_renderer_init|egl_init|renderer_init' \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== 4. GLOBAL EGL CONTEXT ACCESS ===" >> "$OUT"
+
+          grep -RIn -C 8 'globalEGLContext' \
+            build/winlator-upstream/app/src/main/cpp \
+            "$VIRGL" >> "$OUT" 2>/dev/null || true
+
+          echo "=== 5. THREAD SYNCHRONIZATION ===" >> "$OUT"
+
+          grep -RIn -C 5 -E \
+            'pthread_mutex|pthread_rwlock|std::mutex|synchronized|AtomicReference|volatile|HandlerThread|runOnUiThread|queueEvent|eglMakeCurrent' \
+            "$WIN" "$VIRGL" \
+            >> "$OUT" 2>/dev/null || true
+
+          echo "=== 6. VIRGL JAVA STARTUP ===" >> "$OUT"
+
+          for DIR in "$LOCAL_JAVA" "$WIN_JAVA"; do
+            if [ -d "$DIR" ]; then
+              grep -RIn -C 15 -E \
+                'class VirGLRendererComponent|handleNewConnection|handleRequest|getCurrentEGLContextPtr|start\(\)|new Thread|Thread\(' \
+                "$DIR" >> "$OUT" 2>/dev/null || true
+            fi
+          done
+
+          echo "=== 7. EGL ERROR HANDLING ===" >> "$OUT"
+
+          grep -RIn -C 5 -E \
+            'eglGetError|EGL_BAD_MATCH|EGL_BAD_CONTEXT|EGL_BAD_DISPLAY|EGL_NO_CONTEXT|EGL_CONTEXT_CLIENT_VERSION' \
+            "$WIN" "$VIRGL" >> "$OUT" 2>/dev/null || true
 
           echo "=== AUDIT COMPLETE ===" >> "$OUT"
 
