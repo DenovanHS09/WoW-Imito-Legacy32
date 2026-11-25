@@ -4,7 +4,7 @@ name: VirGL ARM32 Runtime Audit
 on:
   push:
     branches:
-      - 'Legacy32-dev'
+      - 'legacy32-dev'
 
   workflow_dispatch:
 
