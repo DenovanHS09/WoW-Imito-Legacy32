@@ -17,6 +17,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # --------------------------------------------------
+      # 1. CHECKOUT
+      # --------------------------------------------------
+
       - name: Checkout Legacy32 repository
         uses: actions/checkout@v4
 
@@ -32,9 +36,14 @@ jobs:
             app/src/main/java
           sparse-checkout-cone-mode: true
 
+      # --------------------------------------------------
+      # 2. PREPARE VIRGL
+      # --------------------------------------------------
+
       - name: Prepare VirGL source
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p build/virgl-source
 
@@ -43,14 +52,19 @@ jobs:
 
           test -d build/virgl-source/cpp/virglrenderer
 
+      # --------------------------------------------------
+      # 3. INSTALL TOOLS AND NDK
+      # --------------------------------------------------
+
       - name: Install audit tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build unzip file
 
       - name: Locate Android NDK
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
             -type f -name sdkmanager 2>/dev/null | head -1)"
@@ -63,9 +77,14 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" \
             >> "$GITHUB_ENV"
 
+      # --------------------------------------------------
+      # 4. REBUILD ARM32 LIBRARIES
+      # --------------------------------------------------
+
       - name: Rebuild ARM32 libraries
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
 
@@ -98,6 +117,7 @@ jobs:
               ]
 
               index = positions[-1] + 1 if positions else 0
+
               lines.insert(index, f"#include <{header}>\n")
               path.write_text("".join(lines))
 
@@ -135,9 +155,14 @@ jobs:
 
           cmake --build build/virgl-arm32-integrated --parallel 2
 
+      # --------------------------------------------------
+      # 5. ELF ARCHITECTURE AND DEPENDENCIES
+      # --------------------------------------------------
+
       - name: Inspect ELF architecture and dependencies
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 
@@ -169,20 +194,28 @@ jobs:
 
             echo "=== $NAME DT_NEEDED ==="
 
-            grep 'NEEDED' "build/runtime-audit/$NAME.dynamic.txt" || true
+            grep 'NEEDED' \
+              "build/runtime-audit/$NAME.dynamic.txt" || true
 
             echo "=== $NAME UNDEFINED SYMBOLS ==="
 
-            grep ' UND ' "build/runtime-audit/$NAME.symbols.txt" || true
+            grep ' UND ' \
+              "build/runtime-audit/$NAME.symbols.txt" || true
 
             echo "=== $NAME JNI EXPORTS ==="
 
-            grep 'Java_' "build/runtime-audit/$NAME.symbols.txt" || true
+            grep 'Java_' \
+              "build/runtime-audit/$NAME.symbols.txt" || true
           done
 
+      # --------------------------------------------------
+      # 6. EGL AND GLES
+      # --------------------------------------------------
+
       - name: Audit EGL and GLES references
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 
@@ -203,9 +236,14 @@ jobs:
 
           cat build/runtime-audit/virgl-graphics-api.txt
 
+      # --------------------------------------------------
+      # 7. JNI SOURCE AUDIT
+      # --------------------------------------------------
+
       - name: Audit JNI exports in source
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p build/runtime-audit
 
@@ -223,9 +261,14 @@ jobs:
           echo "=== VIRGL JNI ==="
           cat build/runtime-audit/virgl-jni-source.txt
 
+      # --------------------------------------------------
+      # 8. GLOBAL EGL CONTEXT
+      # --------------------------------------------------
+
       - name: Audit EGL context ownership and JNI implementation
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
           VIRGL="build/virgl-source/cpp/virglrenderer"
@@ -260,213 +303,194 @@ jobs:
           echo "=== VIRGL DYNAMIC SYMBOL ==="
           cat build/runtime-audit/global-egl-context-virgl-symbol.txt
 
-      - name: Audit EGL Context Initialization Order
-        run: |
-          set -e
-
-          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
-          VIRGL="build/virgl-source/cpp/virglrenderer"
-
-          WINLATOR_JAVA="build/winlator-upstream/app/src/main/java"
-          LOCAL_JAVA="app/src/main/java"
-
-          OUT="build/runtime-audit/egl-order-audit.txt"
-
-          mkdir -p build/runtime-audit
-          : > "$OUT"
-
-          echo "=== GPU HELPER EGL IMPLEMENTATION ===" >> "$OUT"
-
-          grep -RIn -C 20 -E \
-            'globalEGLContext|eglGetCurrentContext|eglCreateContext|setGlobalEGLContext|createOffscreenEGLContext' \
-            "$WINLATOR" >> "$OUT" 2>/dev/null || true
-
-          echo "=== VIRGL EGL CONTEXT CREATION ===" >> "$OUT"
-
-          grep -RIn -C 20 -E \
-            'eglCreateContext|globalEGLContext|eglMakeCurrent|eglDestroyContext' \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== VIRGL JNI CONTEXT IMPLEMENTATION ===" >> "$OUT"
-
-          grep -RIn -C 20 -E \
-            'getCurrentEGLContextPtr|handleNewConnection|handleRequest|destroyRenderer' \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== JAVA EGL AND VIRGL CALL SITES ===" >> "$OUT"
-
-          for JAVA_DIR in "$LOCAL_JAVA" "$WINLATOR_JAVA"; do
-            if [ -d "$JAVA_DIR" ]; then
-              echo "--- SEARCHING $JAVA_DIR ---" >> "$OUT"
-
-              grep -RIn -C 8 -E \
-                'setGlobalEGLContext|createOffscreenEGLContext|getCurrentEGLContextPtr|handleNewConnection|VirGLRendererComponent|startEnvironmentComponents|onSurfaceCreated|eglMakeCurrent' \
-                "$JAVA_DIR" >> "$OUT" 2>/dev/null || true
-            fi
-          done
-
-          echo "=== AUDIT COMPLETE ===" >> "$OUT"
-
-          cat "$OUT"
-
-      - name: Audit EGL Config and Thread Safety
-        shell: bash
-        run: |
-          set -e
-
-          WIN="build/winlator-upstream/app/src/main"
-          VIRGL="build/virgl-source/cpp/virglrenderer"
-
-          WIN_JAVA="build/winlator-upstream/app/src/main/java"
-          LOCAL_JAVA="app/src/main/java"
-
-          OUT="build/runtime-audit/egl-config-thread-audit.txt"
-
-          mkdir -p build/runtime-audit
-          : > "$OUT"
-
-          echo "=== 1. WINLATOR EGL CONFIGURATION ===" >> "$OUT"
-
-          grep -RIn -C 12 -E \
-            'EGL_ALPHA_SIZE|EGL_RED_SIZE|EGL_GREEN_SIZE|EGL_BLUE_SIZE|EGL_RENDERABLE_TYPE|EGL_SURFACE_TYPE|setEGLConfigChooser|eglChooseConfig|setEGLContextClientVersion|EGLConfigChooser' \
-            "$WIN" >> "$OUT" 2>/dev/null || true
-
-          echo "=== 2. VIRGL EGL CONFIGURATION ===" >> "$OUT"
-
-          grep -RIn -C 15 -E \
-            'EGL_ALPHA_SIZE|EGL_RED_SIZE|EGL_GREEN_SIZE|EGL_BLUE_SIZE|EGL_RENDERABLE_TYPE|EGL_SURFACE_TYPE|eglChooseConfig|eglCreateContext|eglBindAPI' \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== 3. VIRGL EGL INITIALIZATION CALLERS ===" >> "$OUT"
-
-          grep -RIn -C 12 -E \
-            'virgl_server_egl_init|virgl_server_renderer_init|egl_init|renderer_init' \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== 4. GLOBAL EGL CONTEXT ACCESS ===" >> "$OUT"
-
-          grep -RIn -C 8 'globalEGLContext' \
-            build/winlator-upstream/app/src/main/cpp \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== 5. THREAD SYNCHRONIZATION ===" >> "$OUT"
-
-          grep -RIn -C 5 -E \
-            'pthread_mutex|pthread_rwlock|std::mutex|synchronized|AtomicReference|volatile|HandlerThread|runOnUiThread|queueEvent|eglMakeCurrent' \
-            "$WIN" "$VIRGL" \
-            >> "$OUT" 2>/dev/null || true
-
-          echo "=== 6. VIRGL JAVA STARTUP ===" >> "$OUT"
-
-          for DIR in "$LOCAL_JAVA" "$WIN_JAVA"; do
-            if [ -d "$DIR" ]; then
-              grep -RIn -C 15 -E \
-                'class VirGLRendererComponent|handleNewConnection|handleRequest|getCurrentEGLContextPtr|start\(\)|new Thread|Thread\(' \
-                "$DIR" >> "$OUT" 2>/dev/null || true
-            fi
-          done
-
-          echo "=== 7. EGL ERROR HANDLING ===" >> "$OUT"
-
-          grep -RIn -C 5 -E \
-            'eglGetError|EGL_BAD_MATCH|EGL_BAD_CONTEXT|EGL_BAD_DISPLAY|EGL_NO_CONTEXT|EGL_CONTEXT_CLIENT_VERSION' \
-            "$WIN" "$VIRGL" >> "$OUT" 2>/dev/null || true
-
-          echo "=== AUDIT COMPLETE ===" >> "$OUT"
-
-          cat "$OUT"
+      # --------------------------------------------------
+      # 9. CONNECTOR, THREAD AND VIEW LIFECYCLE
+      # --------------------------------------------------
 
       - name: Audit Connector Thread and View Lifecycle
         shell: bash
         run: |
-          set -e
-
-          JAVA_ROOTS=(
-            "build/winlator-upstream/app/src/main/java"
-            "app/src/main/java"
-          )
-
-          VIRGL="build/virgl-source/cpp/virglrenderer"
+          set -euo pipefail
 
           OUT="build/runtime-audit/connector-thread-lifecycle.txt"
 
-          mkdir -p build/runtime-audit
-          : > "$OUT"
+          mkdir -p "$(dirname "$OUT")"
 
-          dump_named_files() {
-            TARGET="$1"
+          {
+            echo "=== VIRGL CONNECTOR / THREAD / VIEW LIFECYCLE AUDIT ==="
+            echo "Date: $(date -u)"
+            echo
+
+            echo "=== JAVA SOURCE ROOT ==="
+
+            JAVA_ROOT="build/winlator-upstream/app/src/main/java"
+
+            if [ -d "$JAVA_ROOT" ]; then
+              echo "$JAVA_ROOT EXISTS"
+            else
+              echo "ERROR: JAVA ROOT NOT FOUND"
+            fi
+
+            echo
+            echo "=== JAVA SOURCE FILE DISCOVERY ==="
+
+            find . -type f \
+              \( -name 'XConnectorEpoll.java' \
+              -o -name 'VirGLRendererComponent.java' \
+              -o -name 'XEnvironment.java' \
+              -o -name 'XServerView.java' \
+              -o -name 'GLRenderer.java' \
+              -o -name 'XServerDisplayActivity.java' \) \
+              -not -path './.git/*' \
+              -print | sort
+
+            echo
+            echo "=== FULL JAVA SOURCE FILES ==="
+
             FOUND=0
 
-            for ROOT in "${JAVA_ROOTS[@]}"; do
-              if [ ! -d "$ROOT" ]; then
-                continue
-              fi
+            while IFS= read -r -d '' FILE; do
+              FOUND=1
 
-              while IFS= read -r -d '' FILE; do
-                FOUND=1
+              echo
+              echo "=================================================="
+              echo "FILE: $FILE"
+              echo "=================================================="
 
-                {
-                  echo ""
-                  echo "========================================"
-                  echo "FILE: $FILE"
-                  echo "========================================"
-                  nl -ba "$FILE"
-                } >> "$OUT"
+              nl -ba "$FILE" | head -n 900
 
-              done < <(find "$ROOT" -type f -name "$TARGET" -print0)
-            done
+            done < <(
+              find . -type f \
+                \( -name 'XConnectorEpoll.java' \
+                -o -name 'VirGLRendererComponent.java' \
+                -o -name 'XEnvironment.java' \
+                -o -name 'XServerView.java' \
+                -o -name 'GLRenderer.java' \
+                -o -name 'XServerDisplayActivity.java' \) \
+                -not -path './.git/*' \
+                -print0 | sort -z
+            )
 
             if [ "$FOUND" -eq 0 ]; then
-              echo "FILE NOT FOUND: $TARGET" >> "$OUT"
+              echo
+              echo "ERROR: NONE OF THE SIX JAVA FILES WERE FOUND."
             fi
-          }
 
-          echo "=== 1. CONNECTOR IMPLEMENTATION ===" >> "$OUT"
+            echo
+            echo "=== LIFECYCLE AND THREAD REFERENCES ==="
 
-          dump_named_files "XConnectorEpoll.java"
+            grep -RniE \
+              'startEnvironmentComponents|VirGLRendererComponent|XConnectorEpoll|onSurfaceCreated|setGlobalEGLContext|handleNewConnection|new Thread|Thread\.start|ExecutorService|HandlerThread|CountDownLatch|synchronized|volatile|queueEvent|eglMakeCurrent|eglGetCurrentContext' \
+              build/winlator-upstream/app/src/main/java \
+              app/src/main/java \
+              2>/dev/null || true
 
-          echo "=== 2. VIRGL COMPONENT ===" >> "$OUT"
+            echo
+            echo "=== NATIVE EGL / VIRGL REFERENCES ==="
 
-          dump_named_files "VirGLRendererComponent.java"
+            grep -RniE \
+              'virgl_server_renderer_init|virgl_server_egl_init|eglCreateContext|eglMakeCurrent|globalEGLContext' \
+              build/virgl-source \
+              build/winlator-upstream/app/src/main/cpp \
+              2>/dev/null || true
 
-          echo "=== 3. ENVIRONMENT STARTUP ===" >> "$OUT"
+          } > "$OUT"
 
-          dump_named_files "XEnvironment.java"
+          echo "Audit report generated: $OUT"
+          echo "Report lines: $(wc -l < "$OUT")"
 
-          echo "=== 4. XSERVER VIEW ===" >> "$OUT"
+          head -n 100 "$OUT"
 
-          dump_named_files "XServerView.java"
+      # --------------------------------------------------
+      # 10. EGL INITIALIZATION ORDER
+      # --------------------------------------------------
 
-          echo "=== 5. GL RENDERER ===" >> "$OUT"
+      - name: Audit EGL initialization order
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          dump_named_files "GLRenderer.java"
+          OUT="build/runtime-audit/egl-order-audit.txt"
 
-          echo "=== 6. ACTIVITY VIEW AND STARTUP ORDER ===" >> "$OUT"
+          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+          JAVA="build/winlator-upstream/app/src/main/java"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
 
-          dump_named_files "XServerDisplayActivity.java"
+          {
+            echo "=== EGL INITIALIZATION ORDER AUDIT ==="
+            echo
 
-          echo "=== 7. JAVA STARTUP AND THREAD REFERENCES ===" >> "$OUT"
+            echo "=== GLOBAL EGL CONTEXT ==="
 
-          for ROOT in "${JAVA_ROOTS[@]}"; do
-            if [ -d "$ROOT" ]; then
-              grep -RIn -C 12 -E \
-                'startEnvironmentComponents|VirGLRendererComponent|XConnectorEpoll|onSurfaceCreated|setGlobalEGLContext|handleNewConnection|new Thread|Thread\.start|ExecutorService|HandlerThread' \
-                "$ROOT" >> "$OUT" 2>/dev/null || true
-            fi
-          done
+            grep -RniE \
+              'globalEGLContext|setGlobalEGLContext|eglGetCurrentContext' \
+              "$WINLATOR" "$JAVA" "$VIRGL" 2>/dev/null || true
 
-          echo "=== 8. NATIVE VIRGL INITIALIZATION ===" >> "$OUT"
+            echo
+            echo "=== EGL CONTEXT CREATION ==="
 
-          grep -RIn -C 15 -E \
-            'handleNewConnection|virgl_server_renderer_init|virgl_server_egl_init|eglCreateContext|eglMakeCurrent|globalEGLContext' \
-            "$VIRGL" >> "$OUT" 2>/dev/null || true
+            grep -RniE \
+              'eglCreateContext|eglMakeCurrent|eglDestroyContext' \
+              "$WINLATOR" "$JAVA" "$VIRGL" 2>/dev/null || true
 
-          echo "=== AUDIT COMPLETE ===" >> "$OUT"
+            echo
+            echo "=== RENDERER INITIALIZATION ==="
+
+            grep -RniE \
+              'virgl_server_renderer_init|virgl_server_egl_init|vrend_renderer_init' \
+              "$WINLATOR" "$JAVA" "$VIRGL" 2>/dev/null || true
+
+            echo
+            echo "=== SURFACE INITIALIZATION ==="
+
+            grep -RniE \
+              'onSurfaceCreated|onSurfaceChanged|setRenderer|GLSurfaceView' \
+              "$JAVA" 2>/dev/null || true
+
+          } > "$OUT"
 
           cat "$OUT"
 
+      # --------------------------------------------------
+      # 11. EGL CONFIGURATION AND THREAD AUDIT
+      # --------------------------------------------------
+
+      - name: Audit EGL config and thread safety
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="build/runtime-audit/egl-config-thread-audit.txt"
+
+          WINLATOR="build/winlator-upstream/app/src/main/cpp/winlator"
+          JAVA="build/winlator-upstream/app/src/main/java"
+          VIRGL="build/virgl-source/cpp/virglrenderer"
+
+          {
+            echo "=== EGL CONFIGURATION ==="
+
+            grep -RniE \
+              'EGL_SURFACE_TYPE|EGL_PBUFFER_BIT|EGL_WINDOW_BIT|EGL_RENDERABLE_TYPE|EGL_OPENGL_ES3_BIT|EGL_RED_SIZE|EGL_GREEN_SIZE|EGL_BLUE_SIZE|EGL_ALPHA_SIZE|EGL_CONTEXT_CLIENT_VERSION' \
+              "$WINLATOR" "$JAVA" "$VIRGL" 2>/dev/null || true
+
+            echo
+            echo "=== EGL THREAD AND SYNCHRONIZATION ==="
+
+            grep -RniE \
+              'globalEGLContext|eglMakeCurrent|eglGetCurrentContext|synchronized|volatile|CountDownLatch|Semaphore|ReentrantLock|Mutex|pthread_mutex|queueEvent|HandlerThread|ExecutorService|new Thread|Thread\.start' \
+              "$WINLATOR" "$JAVA" "$VIRGL" 2>/dev/null || true
+
+          } > "$OUT"
+
+          cat "$OUT"
+
+      # --------------------------------------------------
+      # 12. SUMMARY
+      # --------------------------------------------------
+
       - name: Generate runtime audit summary
         if: always()
+        shell: bash
         run: |
           mkdir -p build/runtime-audit
 
@@ -476,16 +500,23 @@ jobs:
             echo "Android API: 26"
             echo "NDK: 27.2.12479018"
 
+            echo
             echo "=== LIBRARIES ==="
 
-            find build/virgl-arm32-integrated -type f \
-              -name '*.so' 2>/dev/null || true
+            find build/virgl-arm32-integrated \
+              -type f -name '*.so' 2>/dev/null || true
 
+            echo
             echo "=== AUDIT FILES ==="
 
-            find build/runtime-audit -type f 2>/dev/null || true
+            find build/runtime-audit \
+              -type f 2>/dev/null || true
 
           } | tee build/runtime-audit/summary.txt
+
+      # --------------------------------------------------
+      # 13. UPLOAD ARTIFACT
+      # --------------------------------------------------
 
       - name: Upload runtime audit report
         if: always()
